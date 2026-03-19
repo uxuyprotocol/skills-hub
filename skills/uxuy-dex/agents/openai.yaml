@@ -1,0 +1,4 @@
+interface:
+  display_name: "UXUY DEX"
+  short_description: "Authenticated UXUY DEX market RPC query helper"
+  default_prompt: "Use $uxuy-dex to query UXUY DEX market RPC methods through gwapi.ourdex.com."
