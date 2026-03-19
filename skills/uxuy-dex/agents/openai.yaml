@@ -1,4 +1,4 @@
 interface:
   display_name: "UXUY DEX"
-  short_description: "Authenticated UXUY DEX market RPC query helper"
-  default_prompt: "Use $uxuy-dex to query UXUY DEX market RPC methods through gwapi.ourdex.com."
+  short_description: "Public UXUY DEX market RPC query helper"
+  default_prompt: "Use $uxuy-dex to query UXUY DEX market RPC methods through gwapi.ourdex.com with the fixed appId 07541bf85df2072a9e0d0b2a964dc718 and no JWT."

@@ -1,27 +1,25 @@
 ---
 name: uxuy-dex
-description: Use this skill when the user wants to query UXUY DEX market data through the authenticated public RPC gateway, especially token, pool, quote, volume, ranking, transaction, or chain status data on bnbchain, solana, base, xlayer, or ethereum.
+description: Use this skill when the user wants to query UXUY DEX market data through the public RPC gateway on bnbchain, solana, base, xlayer, or ethereum. This skill is configured to use appId 07541bf85df2072a9e0d0b2a964dc718 and does not require JWT authentication.
 ---
 
 # UXUY DEX
 
-Use this skill to map a market-data question to the correct UXUY DEX JSON-RPC method and produce a ready-to-send request against `https://gwapi.ourdex.com/{chain}/{appId}`.
+Use this skill to map a market-data question to the correct UXUY DEX JSON-RPC method and produce a ready-to-send request against `https://gwapi.ourdex.com/{chain}/07541bf85df2072a9e0d0b2a964dc718`.
 
 ## Quick Start
 
 Before building any request, collect these required inputs:
 
 - `chain`: one of `bnbchain`, `solana`, `base`, `xlayer`, `ethereum`
-- `appId`: part of the URL path
-- `jwt token`: send as `Authorization: Bearer <jwt token>`
+- fixed `appId`: `07541bf85df2072a9e0d0b2a964dc718`
 - entity input: token address, pool address, address list, or a filter query
 
 Use this HTTP shape:
 
 ```http
-POST https://gwapi.ourdex.com/{chain}/{appId}
+POST https://gwapi.ourdex.com/{chain}/07541bf85df2072a9e0d0b2a964dc718
 Content-Type: application/json
-Authorization: Bearer <jwt token>
 ```
 
 Use a normal JSON-RPC body:
@@ -35,50 +33,43 @@ Use a normal JSON-RPC body:
 }
 ```
 
-## Authentication
+## Gateway Access
 
-Required inputs for authenticated public RPC:
+This skill is configured for a public read-only app that does not require JWT authentication.
 
 - `chain`: `bnbchain`, `solana`, `base`, `xlayer`, or `ethereum`
-- `appId`: part of the gateway path, not a header
-- `jwt token`: send only as `Authorization: Bearer <jwt token>`
+- `appId`: always `07541bf85df2072a9e0d0b2a964dc718`
 
 Gateway shape:
 
 ```http
-POST https://gwapi.ourdex.com/{chain}/{appId}
+POST https://gwapi.ourdex.com/{chain}/07541bf85df2072a9e0d0b2a964dc718
 Content-Type: application/json
-Authorization: Bearer <jwt token>
 ```
 
-Authentication rules:
+Access rules:
 
 - Use HTTPS only.
 - Treat `bnbchain` as the canonical chain name for BSC.
+- Always use the fixed `appId` above in the path.
+- Do not add `Authorization` for this skill's default app.
 - Do not move `appId` into a custom header or query string.
-- Do not use Basic auth or app secret auth for this public gateway flow.
-- If the user asks how to mint a token, share a token, or use `curl`, read [authentication.md](./references/authentication.md).
-- If the user omits auth inputs, ask only for the missing values.
+- If the user asks how to call the gateway with `curl`, read [gateway-usage.md](./references/gateway-usage.md).
+- If the user asks about JWT creation, explain that this skill's configured app does not need JWT and continue with the plain request format.
 
 ## Security
 
-Credential handling rules:
+Request handling rules:
 
-- Users may provide either a ready JWT or JWT minting inputs such as `jwtId`, `jwtIssuer`, `alg`, and a private key.
-- Never print a full JWT token, private key, or the filesystem location of a private key.
-- When echoing credentials back, mask them:
-  - `appId`: show a short hash-style preview such as `4c638f...2b31`
-  - `jwtId`: show a short hash-style preview such as `23c7bc...5590`
-  - `jwt token`: show only a short prefix and suffix such as `eyJhb...abc123`
-  - private key: never display it; describe only the algorithm or fingerprint if needed
-- Never store credentials in repo files, commits, examples, or long-lived notes unless the user explicitly asks for that exact path.
-- Never send UXUY credentials to any host other than `https://gwapi.ourdex.com`.
-- Never suggest unsupported auth modes such as `Authorization: Basic`, query-string tokens, or custom `appid` auth headers.
+- Do not ask the user for JWTs, private keys, or auth headers for this app.
+- Do not add `Authorization: Bearer ...` or other secret-bearing headers.
+- Keep requests pointed at `https://gwapi.ourdex.com` only.
+- Keep the fixed `appId` in the path and do not replace it unless the user explicitly asks to reconfigure the skill.
 - This skill is read-only. Do not use provided credentials for `admin_*`, swap execution, or any write path.
 
 ## Scope
 
-This skill is for read-oriented public `dex_*` RPC methods exposed by the authenticated UXUY DEX gateway.
+This skill is for read-oriented public `dex_*` RPC methods exposed by the UXUY DEX gateway.
 
 Include:
 
@@ -136,36 +127,30 @@ When the user asks for rankings, aggregations, volumes, or txs, read [rpc-refere
 
 When using this skill:
 
-1. Restate the exact gateway URL with the chosen chain and app id.
+1. Restate the exact gateway URL with the chosen chain and fixed app id.
 2. Name the RPC method explicitly.
 3. Show the params in JSON-RPC form.
 4. If the user asked a business question like "查 24h 热门币", translate it to the underlying method and `target`.
-5. Mask any credential material that appears in the answer.
-6. If the user omitted required auth or chain inputs, ask only for the missing values.
+5. Do not add an `Authorization` header unless the user explicitly says they are not using the default app.
+6. If the user omitted the chain, ask only for the missing chain or entity input.
 7. If examples conflict with the reference files in this skill or observed gateway behavior, trust the public RPC contract.
 
-## JWT Token Creation
+## Request Template
 
-UXUY DEX JWTs for this gateway are asymmetric JWTs, not HMAC tokens.
+Use this cURL shape by default:
 
-- Supported signing algorithms: `RS256`, `ES256`
-- Header must include `jti`, and it must match a registered JWT key id for the app
-- Claims should include:
-  - `iss`: the JWT issuer name
-  - `jti`: the JWT key id
-  - `exp`: a near-term expiry
-  - `ts`: current Unix timestamp in seconds
-- Sign with the matching private key, then send the token as a Bearer token
+```bash
+curl https://gwapi.ourdex.com/${CHAIN}/07541bf85df2072a9e0d0b2a964dc718 \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":1,
+    "method":"dex_status",
+    "params":[]
+  }'
+```
 
-Use this high-level workflow:
-
-1. Pick `RS256` or `ES256` to match the registered public key.
-2. Build claims with `iss`, `jti`, `exp`, and `ts`.
-3. Set JWT header `jti` to the same JWT key id.
-4. Sign with the private key.
-5. Send `Authorization: Bearer <jwt token>` to `https://gwapi.ourdex.com/{chain}/{appId}`.
-
-For code-backed details and a Go example, read [authentication.md](./references/authentication.md).
+For more ready-to-send cURL examples, read [gateway-usage.md](./references/gateway-usage.md).
 
 ## Examples
 
@@ -178,6 +163,12 @@ Get chain status:
   "method": "dex_status",
   "params": []
 }
+```
+
+Call URL:
+
+```text
+https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718
 ```
 
 Get one token:

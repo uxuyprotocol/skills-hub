@@ -5,9 +5,9 @@ Use this file only when the user needs exact `target` values, limits, or method-
 ## Gateway
 
 - Base host: `https://gwapi.ourdex.com`
-- Path: `/{chain}/{appId}`
+- Path: `/{chain}/07541bf85df2072a9e0d0b2a964dc718`
 - Supported chains: `bnbchain`, `solana`, `base`, `xlayer`, `ethereum`
-- Header: `Authorization: Bearer <jwt token>`
+- Header: `Content-Type: application/json`
 
 ## Core Methods
 
