@@ -1,0 +1,265 @@
+{
+  "chains": [
+    {
+      "chain": "Ethereum",
+      "stablecoins": [
+        {
+          "name": "Tether USD",
+          "symbol": "USDT",
+          "decimals": 6,
+          "contract_address": "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+        },
+        {
+          "name": "USD Coin",
+          "symbol": "USDC",
+          "decimals": 6,
+          "contract_address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        },
+        {
+          "name": "Dai Stablecoin",
+          "symbol": "DAI",
+          "decimals": 18,
+          "contract_address": "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+        },
+        {
+          "name": "PayPal USD",
+          "symbol": "PYUSD",
+          "decimals": 6,
+          "contract_address": "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8"
+        },
+        {
+          "name": "First Digital USD",
+          "symbol": "FDUSD",
+          "decimals": 18,
+          "contract_address": "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409"
+        },{
+          "name": "USDS Stablecoin",
+          "symbol": "USDS",
+          "decimals": 18,
+          "contract_address": "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+        }
+      ],
+      "main_chain_coins": [
+        {
+          "underlying_chain": "Ethereum",
+          "name": "Wrapped Ether",
+          "symbol": "WETH",
+          "decimals": 18,
+          "contract_address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Wrapped BTC",
+          "symbol": "WBTC",
+          "decimals": 8,
+          "contract_address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+        },
+        {
+          "underlying_chain": "BNB Chain",
+          "name": "Wrapped BNB (Wormhole)",
+          "symbol": "WBNB",
+          "decimals": 18,
+          "contract_address": "0x418D75f65a02b3D53B2418fB8E1Fe493759c7605"
+        },
+        {
+          "underlying_chain": "Solana",
+          "name": "Wrapped SOL (Wormhole)",
+          "symbol": "SOL",
+          "decimals": 9,
+          "contract_address": "0xD31a59c85aE9D8EDEFeC411D448f90841571b89c"
+        }
+      ]
+    },
+    {
+      "chain": "BNB Smart Chain",
+      "stablecoins": [
+        {
+          "name": "Binance-Peg BSC-USD",
+          "symbol": "BSC-USD",
+          "decimals": 18,
+          "contract_address": "0x55d398326f99059fF775485246999027B3197955"
+        },
+        {
+          "name": "Binance-Peg USD Coin",
+          "symbol": "USDC",
+          "decimals": 18,
+          "contract_address": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+        },
+        {
+          "name": "Binance USD",
+          "symbol": "BUSD",
+          "decimals": 18,
+          "contract_address": "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+        },
+        {
+          "name": "First Digital USD",
+          "symbol": "FDUSD",
+          "decimals": 18,
+          "contract_address": "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409"
+        },
+        {
+          "name": "Unity USD",
+          "symbol": "UUSD",
+          "decimals": 18,
+          "contract_address": "0x61a10e8556bed032ea176330e7f17d6a12a10000"
+        }
+      ],
+      "main_chain_coins": [
+        {
+          "underlying_chain": "BNB Chain",
+          "name": "Wrapped BNB",
+          "symbol": "WBNB",
+          "decimals": 18,
+          "contract_address": "0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Binance-Peg BTCB Token",
+          "symbol": "BTCB",
+          "decimals": 18,
+          "contract_address": "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c"
+        },
+        {
+          "underlying_chain": "Ethereum",
+          "name": "Binance-Peg Ethereum Token",
+          "symbol": "ETH",
+          "decimals": 18,
+          "contract_address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8"
+        },
+        {
+          "underlying_chain": "Solana",
+          "name": "Solana",
+          "symbol": "SOL",
+          "decimals": 18,
+          "contract_address": "0x570A5D26f7765Ecb712C0924E4De545B89fD43dF"
+        },
+        {
+          "underlying_chain": "XRP Ledger",
+          "name": "Binance-Peg XRP Token",
+          "symbol": "XRP",
+          "decimals": 18,
+          "contract_address": "0x1D2F0dA169ceB9Fc7B3144628dB156f3F6c60dBE"
+        },
+        {
+          "underlying_chain": "Cardano",
+          "name": "Binance-Peg Cardano Token",
+          "symbol": "ADA",
+          "decimals": 18,
+          "contract_address": "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47"
+        }
+      ]
+    },
+    {
+      "chain": "Base",
+      "stablecoins": [
+        {
+          "name": "USD Coin",
+          "symbol": "USDC",
+          "decimals": 6,
+          "contract_address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        },
+        {
+          "name": "Dai Stablecoin",
+          "symbol": "DAI",
+          "decimals": 18,
+          "contract_address": "0x50c5725949A6F0c72E6C4A641F24049A917DB0Cb"
+        },
+        {
+          "name": "PayPal USD",
+          "symbol": "PYUSD",
+          "decimals": 18,
+          "contract_address": "0xf9Fd08566E60c2Ed1d2E206d8DdEB6Eb5733A0c1"
+        },
+        {
+          "name": "USDT ON BASE",
+          "symbol": "USDTB",
+          "decimals": 18,
+          "contract_address": "0xD74AAe0029a36F68c599969884D9653102Ff0558"
+        },
+        {
+          "name": "EURC",
+          "symbol": "EURC",
+          "decimals": 6,
+          "contract_address": "0x60A3E35Cc302bFA44CB288Bc5A4F316Fdb1ADB42"
+        }
+      ],
+      "main_chain_coins": [
+        {
+          "underlying_chain": "Ethereum",
+          "name": "Wrapped Ether",
+          "symbol": "WETH",
+          "decimals": 18,
+          "contract_address": "0x4200000000000000000000000000000000000006"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Coinbase Wrapped BTC",
+          "symbol": "cbBTC",
+          "decimals": 8,
+          "contract_address": "0xcbb7C0000aB88B473b1f5AFd9ef808440eed33BF"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Wrapped BTC",
+          "symbol": "WBTC",
+          "decimals": 8,
+          "contract_address": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c"
+        },
+        {
+          "underlying_chain": "Solana",
+          "name": "Solana",
+          "symbol": "SOL",
+          "decimals": 9,
+          "contract_address": "0x311935Cd80B76769bf2Ecc9D8aB7635B2139cf82"
+        }
+      ]
+    },
+    {
+      "chain": "Solana",
+      "stablecoins": [
+        {
+          "name": "USDC",
+          "symbol": "USDC",
+          "decimals": 6,
+          "contract_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        },
+        {
+          "name": "USDT",
+          "symbol": "USDT",
+          "decimals": 6,
+          "contract_address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+        }
+      ],
+      "main_chain_coins": [
+        {
+          "underlying_chain": "Solana",
+          "name": "Wrapped SOL",
+          "symbol": "WSOL",
+          "decimals": 9,
+          "contract_address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Wrapped BTC (Wormhole)",
+          "symbol": "WBTC",
+          "decimals": 8,
+          "contract_address": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
+        },
+        {
+          "underlying_chain": "Bitcoin",
+          "name": "Wrapped Bitcoin (Sollet)",
+          "symbol": "BTC",
+          "decimals": 6,
+          "contract_address": "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E"
+        },
+        {
+          "underlying_chain": "Ethereum",
+          "name": "Wrapped Ethereum (Sollet)",
+          "symbol": "ETH",
+          "decimals": 6,
+          "contract_address": "2FPyTwcZLUg1MDrwsyoP4D6s1tM7hAkHYRjkNb5w6Pxk"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "UXUY Wallet"
+  short_description: "Manage local Web3 named secrets and accounts, derive addresses, check balances, and query, approve, or transfer ERC-20 tokens through one Python CLI."
+  default_prompt: "Use $uxuy-wallet to manage a local wallet with one Python command, keep secrets masked, and prefer named accounts over raw mnemonic/private-key fallback. Support secret list/show, mnemonic/private generate or import with --name, account add/list/show/use, derive addresses for bsc/base/ethereum/solana, query tracked balances, and handle ERC-20 query, approve, and transfer flows on EVM chains. Token queries should return standard ERC-20 info such as total supply and cache previously unknown tokens into ~/.uxuy-wallet/.tokens for reuse."
