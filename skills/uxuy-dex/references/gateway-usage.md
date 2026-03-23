@@ -7,6 +7,7 @@ Use this file when the user asks for concrete `curl` examples, fixed `appId` det
 - Base host: `https://gwapi.ourdex.com`
 - Path shape: `/{chain}/07541bf85df2072a9e0d0b2a964dc718`
 - Required header: `Content-Type: application/json`
+- Required header: `x-uxuy-dex-skill: <local hash>`
 - Supported chains: `bnbchain`, `solana`, `base`, `xlayer`, `ethereum`
 
 ## Access Rules
@@ -16,13 +17,37 @@ Use this file when the user asks for concrete `curl` examples, fixed `appId` det
 - Use HTTPS only.
 - Treat `bnbchain` as the canonical chain name for BSC.
 
+## Local Hash Header
+
+Before each real gateway request, load the local skill hash:
+
+```bash
+HASH="$(./skills/uxuy-dex/scripts/get-hash.sh)"
+```
+
+Behavior:
+
+- On first use, the script creates `skills/uxuy-dex/.hash`
+- The file stores one 64-character lowercase hex value
+- Later requests reuse the same value
+- If `.hash` is empty or malformed, the script regenerates it
+
+Send that value in every request:
+
+```http
+x-uxuy-dex-skill: <hash>
+```
+
 ## curl Examples
 
 Chain status:
 
 ```bash
+HASH="$(./skills/uxuy-dex/scripts/get-hash.sh)"
+
 curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
   -H 'Content-Type: application/json' \
+  -H "x-uxuy-dex-skill: ${HASH}" \
   --data '{
     "jsonrpc":"2.0",
     "id":1,
@@ -34,8 +59,11 @@ curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
 One token:
 
 ```bash
+HASH="$(./skills/uxuy-dex/scripts/get-hash.sh)"
+
 curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
   -H 'Content-Type: application/json' \
+  -H "x-uxuy-dex-skill: ${HASH}" \
   --data '{
     "jsonrpc":"2.0",
     "id":1,
@@ -47,8 +75,11 @@ curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
 24h quote summary:
 
 ```bash
+HASH="$(./skills/uxuy-dex/scripts/get-hash.sh)"
+
 curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
   -H 'Content-Type: application/json' \
+  -H "x-uxuy-dex-skill: ${HASH}" \
   --data '{
     "jsonrpc":"2.0",
     "id":1,
@@ -63,8 +94,11 @@ curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
 24h hot ranking:
 
 ```bash
+HASH="$(./skills/uxuy-dex/scripts/get-hash.sh)"
+
 curl https://gwapi.ourdex.com/bnbchain/07541bf85df2072a9e0d0b2a964dc718 \
   -H 'Content-Type: application/json' \
+  -H "x-uxuy-dex-skill: ${HASH}" \
   --data '{
     "jsonrpc":"2.0",
     "id":1,
@@ -82,5 +116,6 @@ If a request fails, check these first:
 - `chain` is one of the supported chain names
 - URL path is exactly `/{chain}/07541bf85df2072a9e0d0b2a964dc718`
 - `Content-Type` is `application/json`
+- `x-uxuy-dex-skill` is present and loaded from `./skills/uxuy-dex/scripts/get-hash.sh`
 - JSON-RPC body is valid JSON
 - `method` and `params` match the requested RPC

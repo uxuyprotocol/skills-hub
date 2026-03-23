@@ -21,6 +21,7 @@ from bip_utils import (
     Bip44,
     Bip44Changes,
     Bip44Coins,
+    TrxAddrEncoder,
 )
 from eth_account import Account
 from solders.keypair import Keypair
@@ -31,20 +32,19 @@ getcontext().prec = 78
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOKENS_REFERENCE = SCRIPT_DIR / "main_tokens.json"
 STORAGE_DIR = Path(os.environ.get("UXUY_WALLET_HOME", Path.home() / ".uxuy-wallet")).expanduser()
-MNEMONIC_FILE = STORAGE_DIR / ".mnemonic"
-PRIVATE_FILE = STORAGE_DIR / ".private"
 TOKENS_FILE = STORAGE_DIR / ".tokens"
 ACCOUNTS_FILE = STORAGE_DIR / ".accounts"
 ACTIVE_ACCOUNT_FILE = STORAGE_DIR / ".active"
-SECRETS_FILE = STORAGE_DIR / ".secrets"
 
 EVM_CHAINS = {"bsc", "base", "ethereum"}
-SUPPORTED_CHAINS = EVM_CHAINS | {"solana"}
+TVM_CHAINS = {"tron"}
+SUPPORTED_CHAINS = EVM_CHAINS | TVM_CHAINS | {"solana"}
 RPC_ENV_VARS = {
     "bsc": "BSC_RPC_URL",
     "base": "BASE_RPC_URL",
     "ethereum": "ETHEREUM_RPC_URL",
     "solana": "SOLANA_RPC_URL",
+    "tron": "TRON_RPC_URL",
 }
 TRACKED_TOKEN_CHAINS = {
     "bsc": "BNB Smart Chain",
@@ -57,6 +57,7 @@ NATIVE_ASSETS = {
     "base": {"name": "Ether", "symbol": "ETH", "decimals": 18},
     "ethereum": {"name": "Ether", "symbol": "ETH", "decimals": 18},
     "solana": {"name": "Solana", "symbol": "SOL", "decimals": 9},
+    "tron": {"name": "TRON", "symbol": "TRX", "decimals": 6},
 }
 SOLANA_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 ERC20_ABI = [
@@ -138,30 +139,17 @@ def ensure_storage_dir() -> None:
 
 def normalize_chain(value: str) -> str:
     chain = value.strip().lower()
-    aliases = {"bnb": "bsc", "bnbchain": "bsc", "eth": "ethereum"}
+    aliases = {"bnb": "bsc", "bnbchain": "bsc", "eth": "ethereum", "trx": "tron"}
     chain = aliases.get(chain, chain)
     if chain not in SUPPORTED_CHAINS:
         raise WalletError(f"Unsupported chain: {value}")
     return chain
 
 
-def write_text_secret(path: Path, value: str) -> None:
-    ensure_storage_dir()
-    path.write_text(value.strip() + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
-
-
 def write_json(path: Path, value: Any) -> None:
     ensure_storage_dir()
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
-
-
-def read_text(path: Path, label: str) -> str:
-    if not path.exists():
-        raise WalletError(f"Missing {label}: {path}")
-    return path.read_text(encoding="utf-8").strip()
-
 
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
@@ -216,12 +204,433 @@ def generate_mnemonic() -> str:
     return str(Bip39MnemonicGenerator().FromWordsNumber(Bip39WordsNum.WORDS_NUM_12))
 
 
-def load_private_store() -> dict[str, Any]:
-    return read_json(PRIVATE_FILE, {})
+ADDRESS_FAMILIES = {
+    "bsc": "evm",
+    "base": "evm",
+    "ethereum": "evm",
+    "solana": "svm",
+    "tron": "tvm",
+}
+SUPPORTED_ADDRESS_FAMILIES = ("evm", "svm", "tvm")
+FAMILY_CHAINS = {
+    "evm": ["ethereum", "bsc", "base"],
+    "svm": ["solana"],
+    "tvm": ["tron"],
+}
 
 
-def save_private_store(store: dict[str, Any]) -> None:
-    write_json(PRIVATE_FILE, store)
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_address_family(value: str) -> str:
+    family = value.strip().lower()
+    if family not in SUPPORTED_ADDRESS_FAMILIES:
+        raise WalletError(f"Unsupported address type: {value}")
+    return family
+
+
+def address_family_for_chain(chain: str) -> str:
+    normalized_chain = normalize_chain(chain)
+    return ADDRESS_FAMILIES[normalized_chain]
+
+
+def empty_tree_branch() -> dict[str, list[dict[str, Any]]]:
+    return {"keys": []}
+
+
+def empty_root_trees() -> dict[str, dict[str, list[dict[str, Any]]]]:
+    return {family: empty_tree_branch() for family in SUPPORTED_ADDRESS_FAMILIES}
+
+
+def empty_accounts_store() -> dict[str, list[dict[str, Any]]]:
+    return {"roots": []}
+
+
+def secret_payload(value: str, masked: str | None = None) -> dict[str, str]:
+    normalized = value.strip()
+    return {
+        "value": normalized,
+        "masked": masked if masked is not None else mask_secret(normalized),
+    }
+
+
+def build_mnemonic_key_node(address_family: str, mnemonic: str, index: int = 0, created_at: str | None = None) -> dict[str, Any]:
+    family = normalize_address_family(address_family)
+    derivation_index = normalize_derivation_index(index)
+    created_at = created_at or utc_now_iso()
+
+    if family == "evm":
+        private_key = derive_evm_private_key_from_mnemonic(mnemonic, index=derivation_index)
+        address = evm_account_from_private_key(private_key).address
+    elif family == "svm":
+        keypair = derive_solana_keypair_from_mnemonic(mnemonic, index=derivation_index)
+        private_key = str(keypair)
+        address = str(keypair.pubkey())
+    elif family == "tvm":
+        private_key = derive_tron_private_key_from_mnemonic(mnemonic, index=derivation_index)
+        address = tron_address_from_private_key(private_key)
+    else:
+        private_key = ""
+        address = ""
+
+    return {
+        "name": "",
+        "derivation_index": derivation_index,
+        "private_key": secret_payload(private_key) if private_key else {},
+        "address": address,
+        "created_at": created_at,
+    }
+
+
+def build_private_key_node(chain: str, value: str, created_at: str | None = None) -> tuple[str, dict[str, Any]]:
+    normalized_chain = normalize_chain(chain)
+    family = address_family_for_chain(normalized_chain)
+    created_at = created_at or utc_now_iso()
+
+    if family == "evm":
+        private_key = value if value.startswith("0x") else f"0x{value}"
+        address = evm_account_from_private_key(private_key).address
+    elif family == "svm":
+        keypair = solana_keypair_from_private_value(value)
+        private_key = str(keypair)
+        address = str(keypair.pubkey())
+    else:
+        private_key = value if value.startswith("0x") else f"0x{value}"
+        address = tron_address_from_private_key(private_key)
+
+    return family, {
+        "name": "",
+        "derivation_index": 0,
+        "private_key": secret_payload(private_key),
+        "address": address,
+        "created_at": created_at,
+    }
+
+
+def normalize_key_node(node: dict[str, Any], family: str) -> dict[str, Any]:
+    if not isinstance(node, dict):
+        raise WalletError(f"Invalid tree key format: {ACCOUNTS_FILE}")
+    private_key = node.get("private_key", {})
+    if private_key is None:
+        private_key = {}
+    if not isinstance(private_key, dict):
+        raise WalletError(f"Invalid private_key payload in {ACCOUNTS_FILE}")
+    key_name = str(node.get("name", "")).strip()
+    key_created_at = node.get("created_at")
+    legacy_accounts = node.get("accounts", [])
+    if legacy_accounts is None:
+        legacy_accounts = []
+    if not isinstance(legacy_accounts, list):
+        raise WalletError(f"Invalid account leaf list in {ACCOUNTS_FILE}")
+    if not key_name:
+        for account in legacy_accounts:
+            if not isinstance(account, dict):
+                raise WalletError(f"Invalid account leaf format: {ACCOUNTS_FILE}")
+            legacy_name = str(account.get("name", "")).strip()
+            if legacy_name:
+                key_name = normalize_account_name(legacy_name)
+                key_created_at = account.get("created_at") or key_created_at
+                break
+    return {
+        "name": normalize_account_name(key_name) if key_name else "",
+        "derivation_index": int(node.get("derivation_index", 0)),
+        "private_key": {
+            "value": str(private_key.get("value", "")).strip(),
+            "masked": str(private_key.get("masked", "")).strip(),
+        },
+        "address": str(node.get("address", "")).strip(),
+        "created_at": key_created_at,
+    }
+
+
+def normalize_root_record(root: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(root, dict):
+        raise WalletError(f"Invalid root format: {ACCOUNTS_FILE}")
+    kind = str(root.get("kind", "")).strip()
+    if kind not in {"mnemonic", "private"}:
+        raise WalletError(f"Invalid root kind in {ACCOUNTS_FILE}: {kind}")
+    name = normalize_mnemonic_name(str(root.get("name", ""))) if kind == "mnemonic" else normalize_account_name(
+        str(root.get("name", ""))
+    )
+    if kind == "private":
+        private_key = root.get("private_key", {})
+        if private_key is None:
+            private_key = {}
+        if not isinstance(private_key, dict):
+            raise WalletError(f"Invalid private key payload in {ACCOUNTS_FILE}")
+
+        address_type = str(root.get("address_type", "")).strip()
+        address = str(root.get("address", "")).strip()
+
+        if not (address_type and private_key.get("value") and address):
+            chain = str(root.get("chain", "")).strip()
+            family = str(root.get("family", "")).strip()
+            legacy_family = normalize_address_family(family) if family else (
+                address_family_for_chain(chain) if chain else ""
+            )
+            secret = root.get("secret", {})
+            if secret is None:
+                secret = {}
+            if not isinstance(secret, dict):
+                raise WalletError(f"Invalid secret payload in {ACCOUNTS_FILE}")
+            raw_trees = root.get("trees", {})
+            if raw_trees is None:
+                raw_trees = {}
+            if not isinstance(raw_trees, dict):
+                raise WalletError(f"Invalid tree payload in {ACCOUNTS_FILE}")
+            legacy_key: dict[str, Any] | None = None
+            if legacy_family:
+                branch = raw_trees.get(legacy_family, {})
+                if branch is None:
+                    branch = {}
+                if not isinstance(branch, dict):
+                    raise WalletError(f"Invalid {legacy_family} branch in {ACCOUNTS_FILE}")
+                keys = branch.get("keys", [])
+                if not isinstance(keys, list):
+                    raise WalletError(f"Invalid key list in {ACCOUNTS_FILE}::{legacy_family}")
+                if keys:
+                    legacy_key = normalize_key_node(keys[0], legacy_family)
+            address_type = address_type or legacy_family
+            if legacy_key is not None:
+                private_key = private_key if private_key.get("value") else legacy_key.get("private_key", {})
+                address = address or str(legacy_key.get("address", "")).strip()
+
+            if not private_key.get("value") and isinstance(secret, dict):
+                private_key = {
+                    "value": str(secret.get("value", "")).strip(),
+                    "masked": str(secret.get("masked", "")).strip(),
+                }
+
+        return {
+            "kind": "private",
+            "name": name,
+            "created_at": root.get("created_at"),
+            "address_type": normalize_address_family(address_type),
+            "private_key": {
+                "value": str(private_key.get("value", "")).strip(),
+                "masked": str(private_key.get("masked", "")).strip(),
+            },
+            "address": address,
+        }
+
+    secret = root.get("secret", {})
+    if secret is None:
+        secret = {}
+    if not isinstance(secret, dict):
+        raise WalletError(f"Invalid secret payload in {ACCOUNTS_FILE}")
+
+    trees = empty_root_trees()
+    raw_trees = root.get("trees", {})
+    if raw_trees is None:
+        raw_trees = {}
+    if not isinstance(raw_trees, dict):
+        raise WalletError(f"Invalid tree payload in {ACCOUNTS_FILE}")
+    for family in SUPPORTED_ADDRESS_FAMILIES:
+        branch = raw_trees.get(family, {})
+        if branch is None:
+            branch = {}
+        if not isinstance(branch, dict):
+            raise WalletError(f"Invalid {family} branch in {ACCOUNTS_FILE}")
+        keys = branch.get("keys", [])
+        if not isinstance(keys, list):
+            raise WalletError(f"Invalid key list in {ACCOUNTS_FILE}::{family}")
+        trees[family] = {"keys": [normalize_key_node(node, family) for node in keys]}
+
+    return {
+        "kind": kind,
+        "name": name,
+        "created_at": root.get("created_at"),
+        "secret": {
+            "value": str(secret.get("value", "")).strip(),
+            "masked": str(secret.get("masked", "")).strip(),
+        },
+        "trees": trees,
+    }
+
+
+def normalize_accounts_store(raw: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(raw, dict):
+        raise WalletError(f"Invalid accounts format: {ACCOUNTS_FILE}")
+    roots = raw.get("roots", [])
+    if not isinstance(roots, list):
+        raise WalletError(f"Invalid roots format: {ACCOUNTS_FILE}")
+    return {"roots": [normalize_root_record(root) for root in roots]}
+
+
+def build_mnemonic_root_record(name: str, value: str, created_at: str | None = None) -> dict[str, Any]:
+    created_at = created_at or utc_now_iso()
+    mnemonic = validate_mnemonic(value)
+    root = {
+        "kind": "mnemonic",
+        "name": normalize_mnemonic_name(name),
+        "created_at": created_at,
+        "secret": {
+            "value": mnemonic,
+            "masked": mask_mnemonic(mnemonic),
+        },
+        "trees": empty_root_trees(),
+    }
+    root["trees"]["evm"]["keys"].append(build_mnemonic_key_node("evm", mnemonic, index=0, created_at=created_at))
+    root["trees"]["svm"]["keys"].append(build_mnemonic_key_node("svm", mnemonic, index=0, created_at=created_at))
+    root["trees"]["tvm"]["keys"].append(build_mnemonic_key_node("tvm", mnemonic, index=0, created_at=created_at))
+    return root
+
+
+def build_private_root_record(name: str, chain: str, value: str, created_at: str | None = None) -> dict[str, Any]:
+    created_at = created_at or utc_now_iso()
+    normalized_name = normalize_account_name(name)
+    normalized_chain = normalize_chain(chain)
+    family, key_node = build_private_key_node(normalized_chain, value, created_at=created_at)
+    return {
+        "kind": "private",
+        "name": normalized_name,
+        "created_at": created_at,
+        "address_type": family,
+        "private_key": key_node["private_key"],
+        "address": key_node["address"],
+    }
+
+
+def find_root_in_store(store: dict[str, list[dict[str, Any]]], kind: str, name: str) -> tuple[int | None, dict[str, Any] | None]:
+    normalized_name = normalize_mnemonic_name(name) if kind == "mnemonic" else normalize_account_name(name)
+    for index, root in enumerate(store["roots"]):
+        if root.get("kind") == kind and root.get("name") == normalized_name:
+            return index, root
+    return None, None
+
+
+def account_tree_path(account_record: dict[str, Any]) -> str:
+    family = account_address_family(account_record)
+    if account_record.get("source_type") == "mnemonic":
+        return (
+            f"mnemonic:{account_record['mnemonic_name']}/"
+            f"{family}/index:{int(account_record.get('derivation_index', 0))}"
+        )
+    root_name = account_record.get("root_name") or account_record["name"]
+    return f"private:{root_name}/{family}"
+
+
+def root_branch_summary(root: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    branches: dict[str, list[dict[str, Any]]] = {}
+    for family in SUPPORTED_ADDRESS_FAMILIES:
+        items: list[dict[str, Any]] = []
+        keys = sorted(root["trees"][family]["keys"], key=lambda item: int(item.get("derivation_index", 0)))
+        for key in keys:
+            items.append(
+                {
+                    "name": key.get("name") or None,
+                    "derivation_index": int(key.get("derivation_index", 0)),
+                    "masked_private_key": key.get("private_key", {}).get("masked") or None,
+                    "address": key.get("address") or None,
+                }
+            )
+        branches[family] = items
+    return branches
+
+
+def flatten_mnemonic_root(root: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": root["name"],
+        "value": root.get("secret", {}).get("value", ""),
+        "masked": root.get("secret", {}).get("masked", ""),
+        "created_at": root.get("created_at"),
+        "branches": root_branch_summary(root),
+    }
+
+
+def find_or_create_key_node(root: dict[str, Any], family: str, derivation_index: int = 0, created_at: str | None = None) -> dict[str, Any]:
+    address_family = normalize_address_family(family)
+    index = normalize_derivation_index(derivation_index)
+    if root["kind"] == "private":
+        raise WalletError("Private roots do not support derived key branches")
+
+    branch = root["trees"][address_family]
+    for key in branch["keys"]:
+        if int(key.get("derivation_index", 0)) == index:
+            return key
+
+    if root.get("secret", {}).get("value"):
+        key_node = build_mnemonic_key_node(
+            address_family,
+            root["secret"]["value"],
+            index=index,
+            created_at=created_at or root.get("created_at"),
+        )
+    else:
+        key_node = {
+            "name": "",
+            "derivation_index": index,
+            "private_key": {},
+            "address": "",
+            "created_at": created_at or root.get("created_at"),
+        }
+    branch["keys"].append(key_node)
+    return key_node
+
+
+def assign_key_name(key_node: dict[str, Any], name: str, created_at: str | None = None) -> None:
+    key_node["name"] = normalize_account_name(name)
+    key_node["created_at"] = created_at or key_node.get("created_at") or utc_now_iso()
+
+
+def prune_empty_private_roots(store: dict[str, list[dict[str, Any]]]) -> None:
+    retained: list[dict[str, Any]] = []
+    for root in store["roots"]:
+        if root.get("kind") != "private":
+            retained.append(root)
+            continue
+        if root.get("name"):
+            retained.append(root)
+    store["roots"] = retained
+
+
+def remove_account_name_from_store(store: dict[str, list[dict[str, Any]]], name: str) -> None:
+    target_name = normalize_account_name(name)
+    retained: list[dict[str, Any]] = []
+    for root in store["roots"]:
+        if root.get("kind") == "private" and root.get("name") == target_name:
+            continue
+        for family in SUPPORTED_ADDRESS_FAMILIES:
+            for key in root.get("trees", {}).get(family, {}).get("keys", []):
+                if key.get("name") == target_name:
+                    key["name"] = ""
+        retained.append(root)
+    store["roots"] = retained
+    prune_empty_private_roots(store)
+
+
+def merge_mnemonic_root(existing: dict[str, Any], value: str, created_at: str | None = None) -> dict[str, Any]:
+    root = build_mnemonic_root_record(existing["name"], value, created_at=created_at or utc_now_iso())
+    for family in SUPPORTED_ADDRESS_FAMILIES:
+        for key in existing["trees"][family]["keys"]:
+            derivation_index = int(key.get("derivation_index", 0))
+            target = find_or_create_key_node(root, family, derivation_index, created_at=key.get("created_at") or root.get("created_at"))
+            if not target.get("address") and key.get("address"):
+                target["address"] = key["address"]
+            if not target.get("private_key") and key.get("private_key"):
+                target["private_key"] = key["private_key"]
+            if key.get("name") and not target.get("name"):
+                target["name"] = key["name"]
+                target["created_at"] = key.get("created_at") or target.get("created_at")
+    return root
+
+
+def load_accounts_store() -> dict[str, list[dict[str, Any]]]:
+    raw = read_json(ACCOUNTS_FILE, empty_accounts_store())
+    return normalize_accounts_store(raw)
+
+
+def save_accounts_store(store: dict[str, list[dict[str, Any]]]) -> None:
+    write_json(ACCOUNTS_FILE, normalize_accounts_store(store))
+
+
+def load_mnemonic_store() -> list[dict[str, Any]]:
+    mnemonics: list[dict[str, Any]] = []
+    for root in load_accounts_store()["roots"]:
+        if root.get("kind") == "mnemonic":
+            mnemonics.append(flatten_mnemonic_root(root))
+    return mnemonics
 
 
 def load_local_tokens() -> list[dict[str, Any]]:
@@ -235,26 +644,47 @@ def save_local_tokens(tokens: list[dict[str, Any]]) -> None:
     write_json(TOKENS_FILE, tokens)
 
 
-def load_secret_store() -> list[dict[str, Any]]:
-    raw = read_json(SECRETS_FILE, [])
-    if not isinstance(raw, list):
-        raise WalletError(f"Invalid secrets format: {SECRETS_FILE}")
-    return raw
-
-
-def save_secret_store(secrets_store: list[dict[str, Any]]) -> None:
-    write_json(SECRETS_FILE, secrets_store)
-
-
 def load_accounts() -> list[dict[str, Any]]:
-    raw = read_json(ACCOUNTS_FILE, [])
-    if not isinstance(raw, list):
-        raise WalletError(f"Invalid accounts format: {ACCOUNTS_FILE}")
-    return raw
-
-
-def save_accounts(accounts: list[dict[str, Any]]) -> None:
-    write_json(ACCOUNTS_FILE, accounts)
+    store = load_accounts_store()
+    accounts: list[dict[str, Any]] = []
+    for root in store["roots"]:
+        if root.get("kind") == "private":
+            root_name = str(root.get("name", "")).strip()
+            if not root_name:
+                continue
+            accounts.append(
+                {
+                    "name": normalize_account_name(root_name),
+                    "source_type": "private",
+                    "root_name": root_name,
+                    "address_type": normalize_address_family(root.get("address_type", "")),
+                    "address": str(root.get("address", "")).strip(),
+                    "private_key": str(root.get("private_key", {}).get("value", "")).strip(),
+                    "masked": str(root.get("private_key", {}).get("masked", "")).strip(),
+                    "created_at": root.get("created_at"),
+                }
+            )
+            continue
+        for family in SUPPORTED_ADDRESS_FAMILIES:
+            for key in root["trees"][family]["keys"]:
+                key_name = str(key.get("name", "")).strip()
+                if not key_name:
+                    continue
+                entry = {
+                    "name": normalize_account_name(key_name),
+                    "source_type": root["kind"],
+                    "root_name": root["name"],
+                    "address_type": family,
+                    "address": key.get("address", ""),
+                    "private_key": key.get("private_key", {}).get("value", ""),
+                    "masked": key.get("private_key", {}).get("masked", ""),
+                    "created_at": key.get("created_at") or root.get("created_at"),
+                }
+                if root["kind"] == "mnemonic":
+                    entry["mnemonic_name"] = root["name"]
+                    entry["derivation_index"] = int(key.get("derivation_index", 0))
+                accounts.append(entry)
+    return accounts
 
 
 def load_active_account_name() -> str | None:
@@ -283,159 +713,136 @@ def normalize_derivation_index(value: int) -> int:
     return index
 
 
-def default_secret_name(source_type: str, chain: str | None = None) -> str:
-    if source_type == "mnemonic":
-        return "default-mnemonic"
-    if source_type == "private":
-        normalized = normalize_chain(chain or "ethereum")
-        return "default-evm-private" if normalized in EVM_CHAINS else "default-solana-private"
-    raise WalletError(f"Unsupported secret type: {source_type}")
-
-
-def normalize_secret_name(value: str) -> str:
+def normalize_mnemonic_name(value: str) -> str:
     name = value.strip()
     if not name:
-        raise WalletError("Secret name is required")
+        raise WalletError("Mnemonic name is required")
     return name
 
 
-def normalize_private_scope(chain: str) -> str:
-    normalized = normalize_chain(chain)
-    return "evm" if normalized in EVM_CHAINS else "solana"
+def find_mnemonic_root(name: str) -> dict[str, Any]:
+    target = normalize_mnemonic_name(name)
+    for root in load_accounts_store()["roots"]:
+        if root.get("kind") == "mnemonic" and root.get("name") == target:
+            return root
+    raise WalletError(f"Unknown mnemonic: {target}")
 
 
-def secret_matches_chain(secret_record: dict[str, Any], chain: str) -> bool:
-    chain = normalize_chain(chain)
-    if secret_record["type"] == "mnemonic":
-        return True
-    scope = secret_record.get("scope", "")
-    return (scope == "evm" and chain in EVM_CHAINS) or (scope == "solana" and chain == "solana")
+def find_first_mnemonic_root() -> dict[str, Any] | None:
+    mnemonics = sorted(
+        (root for root in load_accounts_store()["roots"] if root.get("kind") == "mnemonic"),
+        key=lambda item: item.get("name", ""),
+    )
+    return mnemonics[0] if mnemonics else None
 
 
-def find_secret(name: str) -> dict[str, Any]:
-    target = normalize_secret_name(name)
-    for secret_record in load_secret_store():
-        if secret_record.get("name") == target:
-            return secret_record
-    raise WalletError(f"Unknown secret: {target}")
+def find_mnemonic(name: str) -> dict[str, Any]:
+    return flatten_mnemonic_root(find_mnemonic_root(name))
 
 
-def find_secret_optional(name: str) -> dict[str, Any] | None:
-    try:
-        return find_secret(name)
-    except WalletError:
-        return None
+def find_first_mnemonic() -> dict[str, Any] | None:
+    root = find_first_mnemonic_root()
+    return flatten_mnemonic_root(root) if root else None
 
 
-def upsert_secret(secret_record: dict[str, Any]) -> None:
-    secrets_store = load_secret_store()
-    target_name = secret_record["name"]
-    for index, existing in enumerate(secrets_store):
-        if existing.get("name") == target_name:
-            secrets_store[index] = secret_record
-            save_secret_store(secrets_store)
-            return
-    secrets_store.append(secret_record)
-    save_secret_store(secrets_store)
+def upsert_mnemonic(mnemonic_record: dict[str, Any]) -> None:
+    store = load_accounts_store()
+    created_at = mnemonic_record.get("created_at") or utc_now_iso()
+    _, existing = find_root_in_store(store, "mnemonic", mnemonic_record["name"])
+    root = (
+        merge_mnemonic_root(existing, mnemonic_record["value"], created_at=created_at)
+        if existing is not None
+        else build_mnemonic_root_record(mnemonic_record["name"], mnemonic_record["value"], created_at=created_at)
+    )
+    root["created_at"] = created_at
+    upserted = False
+    for index, current in enumerate(store["roots"]):
+        if current.get("kind") == "mnemonic" and current.get("name") == root["name"]:
+            store["roots"][index] = root
+            upserted = True
+            break
+    if not upserted:
+        store["roots"].append(root)
+    save_accounts_store(store)
 
 
-def secret_summary(secret_record: dict[str, Any]) -> dict[str, Any]:
+def mnemonic_summary(mnemonic_record: dict[str, Any]) -> dict[str, Any]:
     return {
-        "name": secret_record["name"],
-        "type": secret_record["type"],
-        "scope": secret_record.get("scope"),
-        "created_at": secret_record.get("created_at"),
-        "masked": secret_record.get("masked"),
+        "root_type": "mnemonic",
+        "name": mnemonic_record["name"],
+        "created_at": mnemonic_record.get("created_at"),
+        "masked": mnemonic_record.get("masked"),
+        "branches": mnemonic_record.get("branches", {}),
     }
 
 
-def remember_secret(
-    name: str,
-    source_type: str,
-    value: str,
-    chain: str | None = None,
-) -> dict[str, Any]:
-    name = normalize_secret_name(name)
-    created_at = datetime.now(timezone.utc).isoformat()
-    if source_type == "mnemonic":
-        record = {
-            "name": name,
-            "type": "mnemonic",
-            "value": validate_mnemonic(value),
-            "scope": "all",
-            "masked": mask_mnemonic(value),
-            "created_at": created_at,
-        }
-    elif source_type == "private":
-        normalized_chain = normalize_chain(chain or "")
-        scope = normalize_private_scope(normalized_chain)
-        if scope == "evm":
-            private_key = value if value.startswith("0x") else f"0x{value}"
-            address = evm_account_from_private_key(private_key).address
-            masked = mask_secret(private_key)
-            normalized_value = private_key
-        else:
-            keypair = solana_keypair_from_private_value(value)
-            address = str(keypair.pubkey())
-            masked = mask_secret(str(keypair))
-            normalized_value = str(keypair)
-        record = {
-            "name": name,
-            "type": "private",
-            "scope": scope,
-            "value": normalized_value,
-            "masked": masked,
-            "address": address,
-            "created_at": created_at,
-        }
-    else:
-        raise WalletError(f"Unsupported secret type: {source_type}")
-
-    upsert_secret(record)
-    return record
+def remember_mnemonic(name: str, value: str) -> dict[str, Any]:
+    name = normalize_mnemonic_name(name)
+    normalized = validate_mnemonic(value)
+    created_at = utc_now_iso()
+    record = {
+        "name": name,
+        "value": normalized,
+        "masked": mask_mnemonic(normalized),
+        "created_at": created_at,
+    }
+    upsert_mnemonic(record)
+    return find_mnemonic(name)
 
 
-def list_secrets_with_legacy() -> list[dict[str, Any]]:
-    secrets_store = [secret_summary(item) for item in load_secret_store()]
-    if MNEMONIC_FILE.exists():
-        mnemonic = read_text(MNEMONIC_FILE, "mnemonic")
-        secrets_store.append(
-            {
-                "name": default_secret_name("mnemonic"),
-                "type": "mnemonic",
-                "scope": "all",
-                "created_at": None,
-                "masked": mask_mnemonic(mnemonic),
-                "legacy": True,
-            }
-        )
-    private_store = load_private_store()
-    if "evm" in private_store:
-        secrets_store.append(
-            {
-                "name": default_secret_name("private", "ethereum"),
-                "type": "private",
-                "scope": "evm",
-                "created_at": None,
-                "masked": mask_secret(private_store["evm"]["private_key"]),
-                "legacy": True,
-            }
-        )
-    if "solana" in private_store:
-        secrets_store.append(
-            {
-                "name": default_secret_name("private", "solana"),
-                "type": "private",
-                "scope": "solana",
-                "created_at": None,
-                "masked": mask_secret(private_store["solana"]["private_key"]),
-                "legacy": True,
-            }
-        )
-    deduped: dict[str, dict[str, Any]] = {}
-    for secret_record in secrets_store:
-        deduped[secret_record["name"]] = secret_record
-    return sorted(deduped.values(), key=lambda item: item["name"])
+def build_private_account_record(name: str, chain: str, value: str) -> dict[str, Any]:
+    chain = normalize_chain(chain)
+    created_at = utc_now_iso()
+    _, key_node = build_private_key_node(chain, value, created_at=created_at)
+    return {
+        "name": normalize_account_name(name),
+        "chain": chain,
+        "source_type": "private",
+        "root_name": normalize_account_name(name),
+        "address_type": address_family_for_chain(chain),
+        "address": key_node["address"],
+        "private_key": key_node["private_key"]["value"],
+        "masked": key_node["private_key"]["masked"],
+        "created_at": created_at,
+    }
+
+
+def account_address_family(account_record: dict[str, Any]) -> str:
+    family = str(account_record.get("address_type", "")).strip()
+    if family:
+        return normalize_address_family(family)
+    chain = str(account_record.get("chain", "")).strip()
+    if chain:
+        return address_family_for_chain(chain)
+    raise WalletError(f"Account {account_record.get('name', '<unknown>')} is missing address_type")
+
+
+def account_supports_chain(account_record: dict[str, Any], chain: str) -> bool:
+    return account_address_family(account_record) == address_family_for_chain(chain)
+
+
+def default_chain_for_account(account_record: dict[str, Any]) -> str:
+    family = account_address_family(account_record)
+    return FAMILY_CHAINS[family][0]
+
+
+def account_summary(account_record: dict[str, Any]) -> dict[str, Any]:
+    address_type = account_address_family(account_record)
+    summary = {
+        "name": account_record["name"],
+        "source_type": account_record["source_type"],
+        "root_name": account_record.get("root_name") or account_record.get("mnemonic_name") or account_record["name"],
+        "address_type": address_type,
+        "tree_path": account_tree_path(account_record),
+        "address": account_record.get("address"),
+        "created_at": account_record.get("created_at"),
+    }
+    if account_record.get("source_type") == "private":
+        summary["masked"] = account_record.get("masked") or mask_secret(account_record.get("private_key", ""))
+    if account_record.get("source_type") == "mnemonic":
+        summary["mnemonic_name"] = account_record.get("mnemonic_name")
+        summary["derivation_index"] = int(account_record.get("derivation_index", 0))
+    return summary
 
 
 def derive_evm_private_key_from_mnemonic(mnemonic: str, index: int = 0) -> str:
@@ -466,8 +873,28 @@ def derive_solana_keypair_from_mnemonic(mnemonic: str, index: int = 0) -> Keypai
     return Keypair.from_seed(ctx.PrivateKey().Raw().ToBytes())
 
 
+def derive_tron_private_key_from_mnemonic(mnemonic: str, index: int = 0) -> str:
+    index = normalize_derivation_index(index)
+    seed = Bip39SeedGenerator(mnemonic).Generate()
+    ctx = (
+        Bip44.FromSeed(seed, Bip44Coins.TRON)
+        .Purpose()
+        .Coin()
+        .Account(0)
+        .Change(Bip44Changes.CHAIN_EXT)
+        .AddressIndex(index)
+    )
+    return "0x" + ctx.PrivateKey().Raw().ToHex()
+
+
 def evm_account_from_private_key(private_key: str) -> Any:
     return Account.from_key(private_key)
+
+
+def tron_address_from_private_key(private_key: str) -> str:
+    account = evm_account_from_private_key(private_key)
+    uncompressed_public_key = b"\x04" + account._key_obj.public_key.to_bytes()
+    return TrxAddrEncoder.EncodeKey(uncompressed_public_key)
 
 
 def solana_keypair_from_private_value(value: str) -> Keypair:
@@ -480,83 +907,6 @@ def solana_keypair_from_private_value(value: str) -> Keypair:
     if candidate.exists():
         return Keypair.from_json(candidate.read_text(encoding="utf-8"))
     return Keypair.from_base58_string(normalized)
-
-
-def resolve_private_key_slot(chain: str) -> str:
-    return "evm" if chain in EVM_CHAINS else "solana"
-
-
-def resolve_chain_secret(chain: str, source: str = "auto", secret_name: str | None = None) -> tuple[str, str]:
-    chain = normalize_chain(chain)
-    if secret_name:
-        secret_record = find_secret_optional(secret_name)
-        if secret_record:
-            if source != "auto" and secret_record["type"] != source:
-                raise WalletError(
-                    f"Secret {secret_name} is a {secret_record['type']} secret, not compatible with requested source {source}"
-                )
-            if not secret_matches_chain(secret_record, chain):
-                raise WalletError(f"Secret {secret_name} is not compatible with {chain}")
-            return f"{secret_record['type']}:{secret_record['name']}", secret_record["value"]
-        if secret_name == default_secret_name("mnemonic") and MNEMONIC_FILE.exists():
-            if source not in ("auto", "mnemonic"):
-                raise WalletError(f"Secret {secret_name} is a mnemonic secret, not compatible with requested source {source}")
-            return f"mnemonic:{secret_name}", read_text(MNEMONIC_FILE, "mnemonic")
-        private_store = load_private_store()
-        if secret_name == default_secret_name("private", "ethereum") and "evm" in private_store:
-            if source not in ("auto", "private"):
-                raise WalletError(f"Secret {secret_name} is a private secret, not compatible with requested source {source}")
-            return f"private:{secret_name}", private_store["evm"]["private_key"]
-        if secret_name == default_secret_name("private", "solana") and "solana" in private_store:
-            if source not in ("auto", "private"):
-                raise WalletError(f"Secret {secret_name} is a private secret, not compatible with requested source {source}")
-            return f"private:{secret_name}", private_store["solana"]["private_key"]
-        raise WalletError(f"Unknown secret: {secret_name}")
-
-    private_store = load_private_store()
-    mnemonic_exists = MNEMONIC_FILE.exists()
-    slot = resolve_private_key_slot(chain)
-
-    if source == "auto":
-        if slot in private_store:
-            source = "private"
-        elif mnemonic_exists:
-            source = "mnemonic"
-        else:
-            raise WalletError(f"No local secret available for {chain}")
-
-    if source == "private":
-        if slot not in private_store:
-            raise WalletError(f"No stored private key for {chain}")
-        return source, private_store[slot]["private_key"]
-
-    if source == "mnemonic":
-        mnemonic = read_text(MNEMONIC_FILE, "mnemonic")
-        return source, mnemonic
-
-    raise WalletError(f"Unsupported source: {source}")
-
-
-def derive_address(chain: str, source: str = "auto", index: int = 0, secret_name: str | None = None) -> tuple[str, str]:
-    chain = normalize_chain(chain)
-    actual_source, secret = resolve_chain_secret(chain, source, secret_name=secret_name)
-    if chain in EVM_CHAINS:
-        private_key = secret if actual_source.startswith("private") else derive_evm_private_key_from_mnemonic(secret, index=index)
-        return actual_source, evm_account_from_private_key(private_key).address
-    keypair = (
-        solana_keypair_from_private_value(secret)
-        if actual_source.startswith("private")
-        else derive_solana_keypair_from_mnemonic(secret, index=index)
-    )
-    return actual_source, str(keypair.pubkey())
-
-
-def chains_are_compatible(requested_chain: str, account_chain: str) -> bool:
-    requested_chain = normalize_chain(requested_chain)
-    account_chain = normalize_chain(account_chain)
-    if requested_chain == account_chain:
-        return True
-    return requested_chain in EVM_CHAINS and account_chain in EVM_CHAINS
 
 
 def find_account(name: str) -> dict[str, Any]:
@@ -573,31 +923,109 @@ def get_selected_account(name: str | None, chain: str | None = None) -> dict[str
     if not selected_name:
         return None
     account = find_account(selected_name)
-    if chain and not chains_are_compatible(chain, account.get("chain", "")):
+    if chain and not account_supports_chain(account, chain):
         if not explicit_name:
             return None
         raise WalletError(
-            f"Account {selected_name} is for {account.get('chain')}, not compatible with requested chain {normalize_chain(chain)}"
+            f"Account {selected_name} is {account_address_family(account)}, not compatible with requested chain {normalize_chain(chain)}"
         )
     return account
 
 
+def find_first_matching_account(chain: str | None = None, source_type: str | None = None) -> dict[str, Any] | None:
+    for account in sorted(load_accounts(), key=lambda item: item.get("name", "")):
+        if source_type and account.get("source_type") != source_type:
+            continue
+        if chain and not account_supports_chain(account, chain):
+            continue
+        return account
+    return None
+
+
+def find_existing_mnemonic_account(mnemonic_name: str, family: str, derivation_index: int) -> dict[str, Any] | None:
+    target_mnemonic = normalize_mnemonic_name(mnemonic_name)
+    target_family = normalize_address_family(family)
+    target_index = normalize_derivation_index(derivation_index)
+    for account in load_accounts():
+        if account.get("source_type") != "mnemonic":
+            continue
+        if account.get("mnemonic_name") != target_mnemonic:
+            continue
+        if account_address_family(account) != target_family:
+            continue
+        if int(account.get("derivation_index", 0)) != target_index:
+            continue
+        return account
+    return None
+
+
+def derive_address_from_mnemonic_value(chain: str, mnemonic: str, index: int = 0) -> str:
+    chain = normalize_chain(chain)
+    if chain in EVM_CHAINS:
+        private_key = derive_evm_private_key_from_mnemonic(mnemonic, index=index)
+        return evm_account_from_private_key(private_key).address
+    if chain in TVM_CHAINS:
+        private_key = derive_tron_private_key_from_mnemonic(mnemonic, index=index)
+        return tron_address_from_private_key(private_key)
+    return str(derive_solana_keypair_from_mnemonic(mnemonic, index=index).pubkey())
+
+
 def derive_account_address(account: dict[str, Any], chain: str | None = None) -> str:
-    account_chain = normalize_chain(account["chain"])
-    requested_chain = normalize_chain(chain) if chain else account_chain
-    if not chains_are_compatible(requested_chain, account_chain):
+    requested_chain = normalize_chain(chain) if chain else default_chain_for_account(account)
+    if not account_supports_chain(account, requested_chain):
         raise WalletError(f"Account {account['name']} is not compatible with {requested_chain}")
 
+    address = str(account.get("address", "")).strip()
+    if address:
+        return address
+
     source_type = account["source_type"]
-    source_name = account.get("source_name")
-    derivation_index = int(account.get("derivation_index", 0))
     if source_type == "mnemonic":
-        _, address = derive_address(requested_chain, "mnemonic", index=derivation_index, secret_name=source_name)
-        return address
+        mnemonic_name = account.get("mnemonic_name", "").strip()
+        if not mnemonic_name:
+            raise WalletError(f"Account {account['name']} is missing mnemonic_name")
+        mnemonic = find_mnemonic(mnemonic_name)
+        return derive_address_from_mnemonic_value(requested_chain, mnemonic["value"], index=int(account.get("derivation_index", 0)))
     if source_type == "private":
-        _, address = derive_address(requested_chain, "private", secret_name=source_name)
-        return address
+        private_key = account.get("private_key", "").strip()
+        if not private_key:
+            raise WalletError(f"Account {account['name']} is missing private_key")
+        if requested_chain in EVM_CHAINS:
+            return evm_account_from_private_key(private_key).address
+        if requested_chain in TVM_CHAINS:
+            return tron_address_from_private_key(private_key)
+        return str(solana_keypair_from_private_value(private_key).pubkey())
     raise WalletError(f"Unsupported account source: {source_type}")
+
+
+def resolve_fallback_address(chain: str, source: str) -> tuple[str, str]:
+    chain = normalize_chain(chain)
+    if source == "private":
+        account = find_first_matching_account(chain, "private")
+        if not account:
+            raise WalletError(f"No stored private account for {chain}")
+        return f"account:{account['name']}", derive_account_address(account, chain)
+
+    if source == "mnemonic":
+        account = find_first_matching_account(chain, "mnemonic")
+        if account:
+            return f"account:{account['name']}", derive_account_address(account, chain)
+        mnemonic = find_first_mnemonic()
+        if not mnemonic:
+            raise WalletError(f"No stored mnemonic available for {chain}")
+        return f"mnemonic:{mnemonic['name']}", derive_address_from_mnemonic_value(chain, mnemonic["value"], index=0)
+
+    if source == "auto":
+        for source_type in ("private", "mnemonic"):
+            account = find_first_matching_account(chain, source_type)
+            if account:
+                return f"account:{account['name']}", derive_account_address(account, chain)
+        mnemonic = find_first_mnemonic()
+        if mnemonic:
+            return f"mnemonic:{mnemonic['name']}", derive_address_from_mnemonic_value(chain, mnemonic["value"], index=0)
+        raise WalletError(f"No local account available for {chain}")
+
+    raise WalletError(f"Unsupported source: {source}")
 
 
 def resolve_query_target(
@@ -616,20 +1044,47 @@ def resolve_query_target(
     if account:
         return f"account:{account['name']}", derive_account_address(account, chain), account["name"]
 
-    source_label, address = derive_address(chain, source)
+    source_label, address = resolve_fallback_address(chain, source)
     return source_label, address, None
 
 
 def upsert_account(account_record: dict[str, Any]) -> None:
-    accounts = load_accounts()
-    target_name = account_record["name"]
-    for index, existing in enumerate(accounts):
-        if existing.get("name") == target_name:
-            accounts[index] = account_record
-            save_accounts(accounts)
-            return
-    accounts.append(account_record)
-    save_accounts(accounts)
+    store = load_accounts_store()
+    remove_account_name_from_store(store, account_record["name"])
+
+    if account_record["source_type"] == "private":
+        root = build_private_root_record(
+            account_record["name"],
+            account_record["chain"],
+            account_record["private_key"],
+            created_at=account_record.get("created_at"),
+        )
+        for index, existing in enumerate(store["roots"]):
+            if existing.get("kind") == "private" and existing.get("name") == root["name"]:
+                store["roots"][index] = root
+                break
+        else:
+            store["roots"].append(root)
+        save_accounts_store(store)
+        return
+
+    if account_record["source_type"] != "mnemonic":
+        raise WalletError(f"Unsupported account source: {account_record['source_type']}")
+
+    mnemonic_name = normalize_mnemonic_name(str(account_record.get("mnemonic_name", "")))
+    derivation_index = int(account_record.get("derivation_index", 0))
+    chain = normalize_chain(account_record["chain"])
+    family = address_family_for_chain(chain)
+    index, root = find_root_in_store(store, "mnemonic", mnemonic_name)
+    if root is None:
+        raise WalletError(f"Unknown mnemonic: {mnemonic_name}")
+    key_node = find_or_create_key_node(root, family, derivation_index, created_at=account_record.get("created_at"))
+    assign_key_name(key_node, account_record["name"], account_record.get("created_at"))
+    if not key_node.get("address") and account_record.get("address"):
+        key_node["address"] = account_record["address"]
+    if index is not None:
+        store["roots"][index] = root
+    save_accounts_store(store)
 
 
 def require_rpc_url(chain: str) -> str:
@@ -791,6 +1246,24 @@ def rpc_post(url: str, method: str, params: list[Any]) -> Any:
     if data.get("error"):
         raise WalletError(f"RPC error: {data['error']}")
     return data["result"]
+
+
+def tron_post(url: str, path: str, payload: dict[str, Any]) -> Any:
+    endpoint = url.rstrip("/") + "/" + path.lstrip("/")
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(endpoint, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise WalletError(f"TRON HTTP error: {exc.code} {detail}") from exc
+    except URLError as exc:
+        raise WalletError(f"TRON connection error: {exc.reason}") from exc
+    data = json.loads(response_body)
+    if isinstance(data, dict) and data.get("Error"):
+        raise WalletError(f"TRON RPC error: {data['Error']}")
+    return data
 
 
 def get_evm_web3(chain: str) -> Web3:
@@ -967,15 +1440,91 @@ def query_solana_balances(address: str) -> dict[str, Any]:
     return {"chain": "solana", "address": address, "assets": assets}
 
 
+def query_tron_balances(address: str) -> dict[str, Any]:
+    rpc_url = require_rpc_url("tron")
+    account = tron_post(rpc_url, "/wallet/getaccount", {"address": address, "visible": True})
+
+    assets: list[dict[str, Any]] = []
+    native_raw = int(account.get("balance", 0) or 0)
+    if native_raw > 0:
+        native_meta = NATIVE_ASSETS["tron"]
+        assets.append(
+            {
+                "type": "native",
+                "name": native_meta["name"],
+                "symbol": native_meta["symbol"],
+                "decimals": native_meta["decimals"],
+                "raw_balance": str(native_raw),
+                "balance": format_units(native_raw, native_meta["decimals"]),
+            }
+        )
+
+    return {"chain": "tron", "address": address, "assets": assets}
+
+
 def resolve_evm_private_key(
     source: str = "auto",
     index: int = 0,
-    secret_name: str | None = None,
+    mnemonic_name: str | None = None,
 ) -> tuple[str, str, str]:
-    actual_source, secret = resolve_chain_secret("ethereum", source, secret_name=secret_name)
-    private_key = secret if actual_source.startswith("private") else derive_evm_private_key_from_mnemonic(secret, index=index)
-    account = evm_account_from_private_key(private_key)
-    return actual_source, private_key, account.address
+    if source == "private":
+        account = find_first_matching_account("ethereum", "private")
+        if not account:
+            raise WalletError("No stored private account for ethereum")
+        private_key = account.get("private_key", "").strip()
+        if not private_key:
+            raise WalletError(f"Account {account['name']} is missing private_key")
+        return f"account:{account['name']}", private_key, derive_account_address(account, "ethereum")
+
+    if source == "mnemonic":
+        if mnemonic_name is None:
+            mnemonic_account = find_first_matching_account("ethereum", "mnemonic")
+            if mnemonic_account:
+                stored_private_key = mnemonic_account.get("private_key", "").strip()
+                if not stored_private_key:
+                    raise WalletError(f"Account {mnemonic_account['name']} is missing private_key")
+                return (
+                    f"account:{mnemonic_account['name']}",
+                    stored_private_key,
+                    derive_account_address(mnemonic_account, "ethereum"),
+                )
+        if mnemonic_name:
+            mnemonic_account = find_existing_mnemonic_account(mnemonic_name, "evm", index)
+            if mnemonic_account:
+                stored_private_key = mnemonic_account.get("private_key", "").strip()
+                if not stored_private_key:
+                    raise WalletError(f"Account {mnemonic_account['name']} is missing private_key")
+                return (
+                    f"account:{mnemonic_account['name']}",
+                    stored_private_key,
+                    derive_account_address(mnemonic_account, "ethereum"),
+                )
+        mnemonic = find_mnemonic(mnemonic_name) if mnemonic_name else find_first_mnemonic()
+        if not mnemonic:
+            raise WalletError("No stored mnemonic available for ethereum")
+        private_key = derive_evm_private_key_from_mnemonic(mnemonic["value"], index=index)
+        return f"mnemonic:{mnemonic['name']}", private_key, evm_account_from_private_key(private_key).address
+
+    if source == "auto":
+        account = find_first_matching_account("ethereum", "private")
+        if account:
+            private_key = account.get("private_key", "").strip()
+            if not private_key:
+                raise WalletError(f"Account {account['name']} is missing private_key")
+            return f"account:{account['name']}", private_key, derive_account_address(account, "ethereum")
+        mnemonic_account = find_first_matching_account("ethereum", "mnemonic")
+        if mnemonic_account:
+            return resolve_evm_private_key(
+                "mnemonic",
+                index=int(mnemonic_account.get("derivation_index", 0)),
+                mnemonic_name=mnemonic_account.get("mnemonic_name"),
+            )
+        mnemonic = find_first_mnemonic()
+        if mnemonic:
+            return resolve_evm_private_key("mnemonic", index=index, mnemonic_name=mnemonic["name"])
+        raise WalletError("No local account available for ethereum")
+
+    raise WalletError(f"Unsupported source: {source}")
 
 
 def resolve_evm_signer(
@@ -991,10 +1540,13 @@ def resolve_evm_signer(
             _, private_key, address = resolve_evm_private_key(
                 "mnemonic",
                 index=derivation_index,
-                secret_name=account.get("source_name"),
+                mnemonic_name=account.get("mnemonic_name"),
             )
         elif account["source_type"] == "private":
-            _, private_key, address = resolve_evm_private_key("private", secret_name=account.get("source_name"))
+            private_key = account.get("private_key", "").strip()
+            if not private_key:
+                raise WalletError(f"Account {account['name']} is missing private_key")
+            address = derive_account_address(account, chain)
         else:
             raise WalletError(f"Unsupported account source: {account['source_type']}")
         return f"account:{account['name']}", private_key, address, account["name"]
@@ -1012,6 +1564,7 @@ def query_evm_token(
     account_name: str | None,
     source: str,
 ) -> dict[str, Any]:
+    chain = require_evm_chain(chain, "ERC-20 operations")
     checksum_token, known_token = resolve_token_reference(chain, token_ref)
     web3, contract, checksum_token = get_evm_token_contract(chain, checksum_token)
     metadata = load_evm_token_metadata(contract)
@@ -1083,6 +1636,7 @@ def approve_evm_token(
     account_name: str | None,
     source: str,
 ) -> dict[str, Any]:
+    chain = require_evm_chain(chain, "ERC-20 operations")
     checksum_token, _ = resolve_token_reference(chain, token_ref)
     _, contract, checksum_token = get_evm_token_contract(chain, checksum_token)
     metadata = load_evm_token_metadata(contract)
@@ -1117,6 +1671,7 @@ def transfer_evm_token(
     account_name: str | None,
     source: str,
 ) -> dict[str, Any]:
+    chain = require_evm_chain(chain, "ERC-20 operations")
     checksum_token, _ = resolve_token_reference(chain, token_ref)
     _, contract, checksum_token = get_evm_token_contract(chain, checksum_token)
     metadata = load_evm_token_metadata(contract)
@@ -1145,255 +1700,108 @@ def transfer_evm_token(
 
 def cmd_mnemonic_generate(args: argparse.Namespace) -> None:
     mnemonic = generate_mnemonic()
-    secret_name = normalize_secret_name(args.name) if getattr(args, "name", None) else None
-    stored_paths: list[str] = []
-    if secret_name:
-        secret_record = remember_secret(secret_name, "mnemonic", mnemonic)
-        stored_paths.append(str(SECRETS_FILE))
-        evm_source_name = secret_record["name"]
-    else:
-        write_text_secret(MNEMONIC_FILE, mnemonic)
-        stored_paths.append(str(MNEMONIC_FILE))
-        evm_source_name = None
-
-    _, evm_address = derive_address("ethereum", "mnemonic", secret_name=evm_source_name)
-    _, solana_address = derive_address("solana", "mnemonic", secret_name=evm_source_name)
-    payload = {
-        "status": "ok",
-        "stored": stored_paths,
-        "mnemonic": {"masked": mask_mnemonic(mnemonic)},
-        "addresses": {
-            "ethereum": evm_address,
-            "bsc": evm_address,
-            "base": evm_address,
-            "solana": solana_address,
-        },
-    }
-    if secret_name:
-        payload["secret"] = {"name": secret_name, "type": "mnemonic"}
-    print_json(payload)
+    mnemonic_record = remember_mnemonic(args.name, mnemonic)
+    evm_address = derive_address_from_mnemonic_value("ethereum", mnemonic_record["value"], index=0)
+    solana_address = derive_address_from_mnemonic_value("solana", mnemonic_record["value"], index=0)
+    tron_address = derive_address_from_mnemonic_value("tron", mnemonic_record["value"], index=0)
+    print_json(
+        {
+            "status": "ok",
+            "stored": [str(ACCOUNTS_FILE)],
+            "mnemonic": mnemonic_summary(mnemonic_record),
+            "addresses": {
+                "ethereum": evm_address,
+                "bsc": evm_address,
+                "base": evm_address,
+                "solana": solana_address,
+                "tron": tron_address,
+            },
+        }
+    )
 
 
 def cmd_mnemonic_import(args: argparse.Namespace) -> None:
     mnemonic = validate_mnemonic(read_secret_value(args.value, args.stdin, "mnemonic"))
-    secret_name = normalize_secret_name(args.name) if getattr(args, "name", None) else None
-    stored_paths: list[str] = []
-    if secret_name:
-        secret_record = remember_secret(secret_name, "mnemonic", mnemonic)
-        stored_paths.append(str(SECRETS_FILE))
-        evm_source_name = secret_record["name"]
-    else:
-        write_text_secret(MNEMONIC_FILE, mnemonic)
-        stored_paths.append(str(MNEMONIC_FILE))
-        evm_source_name = None
+    mnemonic_record = remember_mnemonic(args.name, mnemonic)
+    evm_address = derive_address_from_mnemonic_value("ethereum", mnemonic_record["value"], index=0)
+    solana_address = derive_address_from_mnemonic_value("solana", mnemonic_record["value"], index=0)
+    tron_address = derive_address_from_mnemonic_value("tron", mnemonic_record["value"], index=0)
+    print_json(
+        {
+            "status": "ok",
+            "stored": [str(ACCOUNTS_FILE)],
+            "mnemonic": mnemonic_summary(mnemonic_record),
+            "addresses": {
+                "ethereum": evm_address,
+                "bsc": evm_address,
+                "base": evm_address,
+                "solana": solana_address,
+                "tron": tron_address,
+            },
+        }
+    )
 
-    _, evm_address = derive_address("ethereum", "mnemonic", secret_name=evm_source_name)
-    _, solana_address = derive_address("solana", "mnemonic", secret_name=evm_source_name)
-    payload = {
-        "status": "ok",
-        "stored": stored_paths,
-        "mnemonic": {"masked": mask_mnemonic(mnemonic)},
-        "addresses": {
-            "ethereum": evm_address,
-            "bsc": evm_address,
-            "base": evm_address,
-            "solana": solana_address,
-        },
-    }
-    if secret_name:
-        payload["secret"] = {"name": secret_name, "type": "mnemonic"}
-    print_json(payload)
+
+def cmd_mnemonic_list(_: argparse.Namespace) -> None:
+    mnemonics = [mnemonic_summary(item) for item in sorted(load_mnemonic_store(), key=lambda entry: entry.get("name", ""))]
+    print_json({"status": "ok", "stored": str(ACCOUNTS_FILE), "mnemonics": mnemonics})
+
+
+def cmd_mnemonic_show(args: argparse.Namespace) -> None:
+    mnemonic_record = find_mnemonic(args.name)
+    print_json({"status": "ok", "stored": str(ACCOUNTS_FILE), "mnemonic": mnemonic_summary(mnemonic_record)})
 
 
 def cmd_private_generate(args: argparse.Namespace) -> None:
     chain = normalize_chain(args.chain)
-    secret_name = normalize_secret_name(args.name) if getattr(args, "name", None) else None
-    store = load_private_store()
-    if chain in EVM_CHAINS:
+    if chain in EVM_CHAINS or chain in TVM_CHAINS:
         private_key = "0x" + secrets.token_hex(32)
-        account = evm_account_from_private_key(private_key)
-        stored_paths: list[str] = []
-        if secret_name:
-            remember_secret(secret_name, "private", private_key, chain=chain)
-            stored_paths.append(str(SECRETS_FILE))
-        else:
-            store["evm"] = {"private_key": private_key}
-            save_private_store(store)
-            stored_paths.append(str(PRIVATE_FILE))
-        payload = {
+    else:
+        private_key = str(Keypair())
+    record = build_private_account_record(args.name, chain, private_key)
+    upsert_account(record)
+    print_json(
+        {
             "status": "ok",
             "chain": chain,
-            "stored": stored_paths,
-            "private_key": {"masked": mask_secret(private_key)},
-            "address": account.address,
+            "stored": [str(ACCOUNTS_FILE)],
+            "account": account_summary(record),
         }
-        if secret_name:
-            payload["secret"] = {"name": secret_name, "type": "private", "scope": "evm"}
-        print_json(payload)
-        return
-
-    keypair = Keypair()
-    private_key = str(keypair)
-    stored_paths: list[str] = []
-    if secret_name:
-        remember_secret(secret_name, "private", private_key, chain=chain)
-        stored_paths.append(str(SECRETS_FILE))
-    else:
-        store["solana"] = {"private_key": private_key}
-        save_private_store(store)
-        stored_paths.append(str(PRIVATE_FILE))
-    payload = {
-        "status": "ok",
-        "chain": chain,
-        "stored": stored_paths,
-        "private_key": {"masked": mask_secret(private_key)},
-        "address": str(keypair.pubkey()),
-    }
-    if secret_name:
-        payload["secret"] = {"name": secret_name, "type": "private", "scope": "solana"}
-    print_json(payload)
+    )
 
 
 def cmd_private_import(args: argparse.Namespace) -> None:
     chain = normalize_chain(args.chain)
     raw_value = read_secret_value(args.value, args.stdin, "private key")
-    secret_name = normalize_secret_name(args.name) if getattr(args, "name", None) else None
-    store = load_private_store()
-
-    if chain in EVM_CHAINS:
-        private_key = raw_value if raw_value.startswith("0x") else f"0x{raw_value}"
-        account = evm_account_from_private_key(private_key)
-        stored_paths: list[str] = []
-        if secret_name:
-            remember_secret(secret_name, "private", private_key, chain=chain)
-            stored_paths.append(str(SECRETS_FILE))
-        else:
-            store["evm"] = {"private_key": private_key}
-            save_private_store(store)
-            stored_paths.append(str(PRIVATE_FILE))
-        payload = {
+    record = build_private_account_record(args.name, chain, raw_value)
+    upsert_account(record)
+    print_json(
+        {
             "status": "ok",
             "chain": chain,
-            "stored": stored_paths,
-            "private_key": {"masked": mask_secret(private_key)},
-            "address": account.address,
+            "stored": [str(ACCOUNTS_FILE)],
+            "account": account_summary(record),
         }
-        if secret_name:
-            payload["secret"] = {"name": secret_name, "type": "private", "scope": "evm"}
-        print_json(payload)
-        return
-
-    keypair = solana_keypair_from_private_value(raw_value)
-    private_key = str(keypair)
-    stored_paths: list[str] = []
-    if secret_name:
-        remember_secret(secret_name, "private", private_key, chain=chain)
-        stored_paths.append(str(SECRETS_FILE))
-    else:
-        store["solana"] = {"private_key": private_key}
-        save_private_store(store)
-        stored_paths.append(str(PRIVATE_FILE))
-    payload = {
-        "status": "ok",
-        "chain": chain,
-        "stored": stored_paths,
-        "private_key": {"masked": mask_secret(private_key)},
-        "address": str(keypair.pubkey()),
-    }
-    if secret_name:
-        payload["secret"] = {"name": secret_name, "type": "private", "scope": "solana"}
-    print_json(payload)
-
-
-def cmd_secret_list(_: argparse.Namespace) -> None:
-    print_json({"status": "ok", "stored": str(SECRETS_FILE), "secrets": list_secrets_with_legacy()})
-
-
-def cmd_secret_show(args: argparse.Namespace) -> None:
-    secret_record = find_secret_optional(args.name)
-    if secret_record:
-        print_json({"status": "ok", "secret": secret_summary(secret_record), "stored": str(SECRETS_FILE)})
-        return
-
-    legacy_name = normalize_secret_name(args.name)
-    if legacy_name == default_secret_name("mnemonic") and MNEMONIC_FILE.exists():
-        mnemonic = read_text(MNEMONIC_FILE, "mnemonic")
-        print_json(
-            {
-                "status": "ok",
-                "secret": {
-                    "name": legacy_name,
-                    "type": "mnemonic",
-                    "scope": "all",
-                    "legacy": True,
-                    "masked": mask_mnemonic(mnemonic),
-                },
-            }
-        )
-        return
-    if legacy_name == default_secret_name("private", "ethereum"):
-        private_store = load_private_store()
-        if "evm" in private_store:
-            print_json(
-                {
-                    "status": "ok",
-                    "secret": {
-                        "name": legacy_name,
-                        "type": "private",
-                        "scope": "evm",
-                        "legacy": True,
-                        "masked": mask_secret(private_store["evm"]["private_key"]),
-                    },
-                }
-            )
-            return
-    if legacy_name == default_secret_name("private", "solana"):
-        private_store = load_private_store()
-        if "solana" in private_store:
-            print_json(
-                {
-                    "status": "ok",
-                    "secret": {
-                        "name": legacy_name,
-                        "type": "private",
-                        "scope": "solana",
-                        "legacy": True,
-                        "masked": mask_secret(private_store["solana"]["private_key"]),
-                    },
-                }
-            )
-            return
-    raise WalletError(f"Unknown secret: {args.name}")
+    )
 
 
 def cmd_account_add(args: argparse.Namespace) -> None:
     chain = normalize_chain(args.chain)
     name = normalize_account_name(args.name)
     derivation_index = normalize_derivation_index(args.index)
-    source_type = args.source
-    source_name = normalize_secret_name(args.source_name) if args.source_name else None
-
-    if source_type == "mnemonic":
-        if source_name:
-            _, address = derive_address(chain, "mnemonic", index=derivation_index, secret_name=source_name)
-        else:
-            if not MNEMONIC_FILE.exists():
-                raise WalletError(f"Missing mnemonic: {MNEMONIC_FILE}")
-            _, address = derive_address(chain, "mnemonic", index=derivation_index)
-    elif source_type == "private":
-        if source_name:
-            _, address = derive_address(chain, "private", secret_name=source_name)
-        else:
-            _, address = derive_address(chain, "private")
-        derivation_index = 0
-    else:
-        raise WalletError(f"Unsupported account source: {source_type}")
+    mnemonic_name = normalize_mnemonic_name(args.source_name)
+    family = address_family_for_chain(chain)
+    previous_account = find_existing_mnemonic_account(mnemonic_name, family, derivation_index)
+    previous_name = previous_account["name"] if previous_account else None
+    active_name = load_active_account_name()
+    mnemonic = find_mnemonic(mnemonic_name)
+    address = derive_address_from_mnemonic_value(chain, mnemonic["value"], index=derivation_index)
 
     record = {
         "name": name,
         "chain": chain,
-        "source_type": source_type,
-        "source_name": source_name or default_secret_name(source_type, chain),
+        "source_type": "mnemonic",
+        "mnemonic_name": mnemonic_name,
         "derivation_index": derivation_index,
         "address": address,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1401,14 +1809,14 @@ def cmd_account_add(args: argparse.Namespace) -> None:
     upsert_account(record)
 
     activated = False
-    if args.use or load_active_account_name() is None:
+    if args.use or active_name is None or (previous_name and active_name == previous_name):
         save_active_account_name(name)
         activated = True
 
     print_json(
         {
             "status": "ok",
-            "account": record,
+            "account": account_summary(record),
             "stored": str(ACCOUNTS_FILE),
             "active": activated,
             "active_file": str(ACTIVE_ACCOUNT_FILE),
@@ -1420,7 +1828,7 @@ def cmd_account_list(_: argparse.Namespace) -> None:
     active_name = load_active_account_name()
     accounts: list[dict[str, Any]] = []
     for account in sorted(load_accounts(), key=lambda item: item.get("name", "")):
-        entry = dict(account)
+        entry = account_summary(account)
         entry["active"] = account.get("name") == active_name
         accounts.append(entry)
     print_json({"status": "ok", "active_account": active_name, "accounts": accounts})
@@ -1430,7 +1838,7 @@ def cmd_account_show(args: argparse.Namespace) -> None:
     account = get_selected_account(args.name)
     if not account:
         raise WalletError("No active account selected")
-    print_json({"status": "ok", "active_account": load_active_account_name(), "account": account})
+    print_json({"status": "ok", "active_account": load_active_account_name(), "account": account_summary(account)})
 
 
 def cmd_account_use(args: argparse.Namespace) -> None:
@@ -1456,7 +1864,7 @@ def cmd_address_show(args: argparse.Namespace) -> None:
         )
         return
 
-    source, address = derive_address(chain, args.source)
+    source, address = resolve_fallback_address(chain, args.source)
     print_json({"status": "ok", "chain": chain, "source": source, "address": address})
 
 
@@ -1464,7 +1872,12 @@ def cmd_balances(args: argparse.Namespace) -> None:
     chain = normalize_chain(args.chain)
     source, address, account_name = resolve_query_target(chain, args.account, args.address, args.source)
 
-    result = query_solana_balances(address) if chain == "solana" else query_evm_balances(chain, address)
+    if chain == "solana":
+        result = query_solana_balances(address)
+    elif chain == "tron":
+        result = query_tron_balances(address)
+    else:
+        result = query_evm_balances(chain, address)
     result["status"] = "ok"
     result["source"] = source
     if account_name:
@@ -1514,53 +1927,50 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage a local UXUY Web3 wallet")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    mnemonic_parser = subparsers.add_parser("mnemonic", help="Generate or import a mnemonic")
+    mnemonic_parser = subparsers.add_parser("mnemonic", help="Generate, import, or inspect named mnemonics in .accounts")
     mnemonic_subparsers = mnemonic_parser.add_subparsers(dest="mnemonic_command", required=True)
 
-    mnemonic_generate = mnemonic_subparsers.add_parser("generate", help="Generate and store a mnemonic")
-    mnemonic_generate.add_argument("--name", help="Store as a named secret in .secrets instead of the legacy .mnemonic file")
+    mnemonic_generate = mnemonic_subparsers.add_parser("generate", help="Generate and store a named mnemonic")
+    mnemonic_generate.add_argument("--name", required=True, help="Mnemonic name")
     mnemonic_generate.set_defaults(func=cmd_mnemonic_generate)
 
-    mnemonic_import = mnemonic_subparsers.add_parser("import", help="Import and store a mnemonic")
-    mnemonic_import.add_argument("--name", help="Store as a named secret in .secrets instead of the legacy .mnemonic file")
+    mnemonic_import = mnemonic_subparsers.add_parser("import", help="Import and store a named mnemonic")
+    mnemonic_import.add_argument("--name", required=True, help="Mnemonic name")
     mnemonic_import.add_argument("--value", help="Mnemonic value")
     mnemonic_import.add_argument("--stdin", action="store_true", help="Read mnemonic from stdin")
     mnemonic_import.set_defaults(func=cmd_mnemonic_import)
 
-    private_parser = subparsers.add_parser("private", help="Generate or import a private key")
+    mnemonic_list = mnemonic_subparsers.add_parser("list", help="List stored mnemonic roots")
+    mnemonic_list.set_defaults(func=cmd_mnemonic_list)
+
+    mnemonic_show = mnemonic_subparsers.add_parser("show", help="Show one mnemonic summary")
+    mnemonic_show.add_argument("--name", required=True)
+    mnemonic_show.set_defaults(func=cmd_mnemonic_show)
+
+    private_parser = subparsers.add_parser("private", help="Generate or import a private-key account")
     private_subparsers = private_parser.add_subparsers(dest="private_command", required=True)
 
-    private_generate = private_subparsers.add_parser("generate", help="Generate and store a private key")
+    private_generate = private_subparsers.add_parser("generate", help="Generate and store a private-key account")
     private_generate.add_argument("--chain", required=True)
-    private_generate.add_argument("--name", help="Store as a named secret in .secrets instead of the legacy .private file")
+    private_generate.add_argument("--name", required=True, help="Account name")
     private_generate.set_defaults(func=cmd_private_generate)
 
-    private_import = private_subparsers.add_parser("import", help="Import and store a private key")
+    private_import = private_subparsers.add_parser("import", help="Import and store a private-key account")
     private_import.add_argument("--chain", required=True)
-    private_import.add_argument("--name", help="Store as a named secret in .secrets instead of the legacy .private file")
+    private_import.add_argument("--name", required=True, help="Account name")
     private_import.add_argument("--value", help="Private key value")
     private_import.add_argument("--stdin", action="store_true", help="Read private key from stdin")
     private_import.set_defaults(func=cmd_private_import)
 
-    secret_parser = subparsers.add_parser("secret", help="List or inspect named secrets")
-    secret_subparsers = secret_parser.add_subparsers(dest="secret_command", required=True)
-
-    secret_list = secret_subparsers.add_parser("list", help="List named secrets and legacy defaults")
-    secret_list.set_defaults(func=cmd_secret_list)
-
-    secret_show = secret_subparsers.add_parser("show", help="Show one secret summary")
-    secret_show.add_argument("--name", required=True)
-    secret_show.set_defaults(func=cmd_secret_show)
-
     account_parser = subparsers.add_parser("account", help="Create and manage named wallet accounts")
     account_subparsers = account_parser.add_subparsers(dest="account_command", required=True)
 
-    account_add = account_subparsers.add_parser("add", help="Add or update a named account")
+    account_add = account_subparsers.add_parser("add", help="Add or update a mnemonic-derived account")
     account_add.add_argument("--name", required=True)
     account_add.add_argument("--chain", required=True)
-    account_add.add_argument("--source", choices=["mnemonic", "private"], required=True)
-    account_add.add_argument("--source-name", help="Named secret to bind this account to. Defaults to the legacy secret slot")
-    account_add.add_argument("--index", type=int, default=0, help="Mnemonic derivation index, only used with --source mnemonic")
+    account_add.add_argument("--source", choices=["mnemonic"], required=True)
+    account_add.add_argument("--source-name", required=True, help="Mnemonic root name")
+    account_add.add_argument("--index", type=int, default=0, help="Mnemonic derivation index")
     account_add.add_argument("--use", action="store_true", help="Set the account as active after saving")
     account_add.set_defaults(func=cmd_account_add)
 

@@ -1,6 +1,6 @@
 ---
 name: uxuy-wallet
-description: Use this skill when the user wants to create or manage a local Web3 wallet, generate or import a mnemonic or private key, derive addresses for bsc, base, ethereum, or solana, query balances for tracked assets, or query, approve, or transfer an ERC-20 token on bsc, base, or ethereum from a local wallet.
+description: Use this skill when the user wants to create or manage a local Web3 wallet, generate or import a mnemonic or private key, derive addresses for bsc, base, ethereum, tron, or solana, query balances for tracked assets, or query, approve, or transfer an ERC-20 token on bsc, base, or ethereum from a local wallet.
 ---
 
 # UXUY Wallet
@@ -13,11 +13,8 @@ python scripts/wallet.py <command> ...
 
 The script stores local state under `~/.uxuy-wallet/` by default:
 
-- `.mnemonic`: active mnemonic
-- `.private`: imported or generated private keys
-- `.secrets`: named mnemonic/private secrets for multi-account use
 - `.tokens`: locally discovered ERC-20 tokens that were queried before
-- `.accounts`: named accounts that map to mnemonic/private sources
+- `.accounts`: one tree store whose top-level `roots` are named `mnemonic` or `private` secrets
 - `.active`: current default account name
 
 Set `UXUY_WALLET_HOME` to override the storage directory.
@@ -51,8 +48,8 @@ Follow these rules when using this skill:
 
 Supported chains:
 
-- Address derivation: `bsc`, `base`, `ethereum`, `solana`
-- Balance query: `bsc`, `base`, `ethereum`, `solana`
+- Address derivation: `bsc`, `base`, `ethereum`, `tron`, `solana`
+- Balance query: `bsc`, `base`, `ethereum`, `tron`, `solana`
 - ERC-20 query / approve / transfer: `bsc`, `base`, `ethereum`
 
 Required RPC env vars:
@@ -60,6 +57,7 @@ Required RPC env vars:
 - `BSC_RPC_URL`
 - `BASE_RPC_URL`
 - `ETHEREUM_RPC_URL`
+- `TRON_RPC_URL`
 - `SOLANA_RPC_URL`
 
 ## Command Map
@@ -67,36 +65,31 @@ Required RPC env vars:
 Mnemonic management:
 
 ```bash
-python scripts/wallet.py mnemonic generate
 python scripts/wallet.py mnemonic generate --name seed-main
-python scripts/wallet.py mnemonic import --stdin
 python scripts/wallet.py mnemonic import --name seed-backup --stdin
-python scripts/wallet.py mnemonic import --value "word1 word2 ..."
+python scripts/wallet.py mnemonic import --name seed-main --value "word1 word2 ..."
+python scripts/wallet.py mnemonic list
+python scripts/wallet.py mnemonic show --name seed-main
 ```
 
 Private key management:
 
 ```bash
-python scripts/wallet.py private generate --chain ethereum
-python scripts/wallet.py private generate --chain bsc --name trading-key
-python scripts/wallet.py private generate --chain solana
-python scripts/wallet.py private import --chain base --stdin
-python scripts/wallet.py private import --chain bsc --name trading-key --stdin
-python scripts/wallet.py private import --chain solana --value "<private>"
-```
-
-Secret management:
-
-```bash
-python scripts/wallet.py secret list
-python scripts/wallet.py secret show --name seed-main
-python scripts/wallet.py secret show --name default-evm-private
+python scripts/wallet.py private generate --chain ethereum --name trading-eth
+python scripts/wallet.py private generate --chain bsc --name trading-bsc
+python scripts/wallet.py private generate --chain tron --name trading-trx
+python scripts/wallet.py private generate --chain solana --name sol-main
+python scripts/wallet.py private import --chain base --name base-hot --stdin
+python scripts/wallet.py private import --chain bsc --name trading-bsc --stdin
+python scripts/wallet.py private import --chain tron --name trading-trx --stdin
+python scripts/wallet.py private import --chain solana --name sol-main --value "<private>"
 ```
 
 Address derivation:
 
 ```bash
 python scripts/wallet.py address show --chain bsc
+python scripts/wallet.py address show --chain tron
 python scripts/wallet.py address show --chain solana --source mnemonic
 python scripts/wallet.py address show --chain bsc --account trading
 ```
@@ -105,6 +98,7 @@ Balance query:
 
 ```bash
 python scripts/wallet.py balances --chain ethereum
+python scripts/wallet.py balances --chain tron --account main-tron
 python scripts/wallet.py balances --chain solana --address <address>
 python scripts/wallet.py balances --chain bsc --account main-bsc
 ```
@@ -113,11 +107,11 @@ Account management:
 
 ```bash
 python scripts/wallet.py account add --name main-bsc --chain bsc --source mnemonic --source-name seed-main --index 0 --use
+python scripts/wallet.py account add --name main-tron --chain tron --source mnemonic --source-name seed-main --index 0
 python scripts/wallet.py account add --name main-sol --chain solana --source mnemonic --source-name seed-main --index 0
-python scripts/wallet.py account add --name trading --chain bsc --source private --source-name trading-key
 python scripts/wallet.py account list
 python scripts/wallet.py account show
-python scripts/wallet.py account use --name trading
+python scripts/wallet.py account use --name trading-bsc
 ```
 
 ERC-20 operations:
@@ -132,19 +126,27 @@ python scripts/wallet.py token transfer --chain base --token 0x833589fCD6eDb6E08
 
 ## Behavior Notes
 
-- EVM chains derive from the same mnemonic path and the same stored EVM private key slot.
-- Named accounts sit above secrets and let the user choose an address explicitly instead of relying on whichever mnemonic/private key is currently available.
-- Named secrets sit below accounts and let the user keep multiple mnemonics or private keys locally without overwriting the legacy `.mnemonic` / `.private` slots.
+- `.accounts` is the single wallet state file and stores a `roots` tree. Each root is either a named `mnemonic` or a named `private` secret.
+- Mnemonic roots branch into `evm`, `svm`, and `tvm`, and all three families now store derived keys and addresses.
+- Each branch stores private-key material, the derived address, and an optional key-level account name.
+- Private-key imports are stored as a single-leaf private root: one `address_type`, one private key, and one address. They do not create empty `evm` / `svm` / `tvm` branches.
+- `tron` maps to the `tvm` branch and uses the standard TRON BIP44 derivation path for mnemonic-derived keys.
+- The `mnemonic` commands operate on mnemonic roots inside `.accounts`.
+- Private-key account records keep the address and private key together in the tree, but command output only shows masked private-key status.
+- Mnemonic-derived accounts store the account name, derivation index, and the `mnemonic_name` they come from. Account-facing output summarizes the branch `address_type` instead of any chain label.
+- This storage model is a direct switch. Older `.accounts` layouts do not need to be preserved.
+- EVM private-key accounts can be reused across `bsc`, `base`, and `ethereum`.
 - Mnemonic accounts support multiple derivation indexes and can be saved as separate named accounts.
 - Solana uses the standard Solana BIP44 path when deriving from the mnemonic.
+- TRON uses the standard TRON BIP44 path when deriving from the mnemonic.
+- `balances --chain tron` supports native `TRX` balance queries. TRC-20 query / approve / transfer are not supported yet.
 - Balance queries only return native assets or tracked tokens with balance greater than zero.
 - Tracked tokens come from `scripts/main_tokens.json` plus locally discovered tokens in `~/.uxuy-wallet/.tokens`.
 - `balances`, `token query`, `token approve`, and `token transfer` should prefer `--account`; if it is omitted, use the active account from `~/.uxuy-wallet/.active` when present.
 - `token query` always returns ERC-20 metadata and `total_supply`, and can also return holder balance or allowance.
 - `token query`, `token approve`, and `token transfer` accept either a token address or a known token symbol/name already present in `main_tokens.json` or `.tokens`.
 - If a user queries an ERC-20 token by address and it is not in `main_tokens.json`, cache it in `.tokens` for later reuse.
-- `token approve` and `token transfer` only work on EVM chains and sign with the selected account, or with the raw mnemonic/private fallback if no account is selected.
-- If the user needs to manage multiple private keys or mnemonics, create named secrets first, then bind named accounts to those secrets.
+- `token approve` and `token transfer` only work on EVM chains and sign with the selected account, or with the local fallback account state if no account is selected.
 - If the user asks to create or deploy a token, explain that this version does not include token deployment.
 
 ## Working Style
@@ -152,8 +154,8 @@ python scripts/wallet.py token transfer --chain base --token 0x833589fCD6eDb6E08
 When using this skill:
 
 1. Pick the exact chain and command first.
-2. Prefer `--stdin` for imports when handling secrets.
-3. Prefer named accounts for everyday operations instead of relying on the default secret directly.
+2. Prefer `--stdin` for imports when handling mnemonics or private keys.
+3. Prefer named accounts for everyday operations instead of relying on fallback resolution.
 4. If no `--account` is supplied, the script will use the active account when one exists.
 5. If no address is supplied for `balances`, let the script derive the target from the selected account or local wallet state.
 6. When reporting results, show the account name, derived address, and masked secret status, not the raw mnemonic or private key.
