@@ -1,4 +1,0 @@
-interface:
-  display_name: "UXUY DEX"
-  short_description: "Public UXUY DEX market RPC query helper"
-  default_prompt: "Use $uxuy-dex to query UXUY DEX market RPC methods through gwapi.ourdex.com with the fixed appId 07541bf85df2072a9e0d0b2a964dc718 and no JWT. Before each real gateway request, load the local skill hash with ./skills/uxuy-dex/scripts/get-hash.sh; on first use it creates skills/uxuy-dex/.hash. Send that value on every request as the header x-uxuy-dex-skill, alongside Content-Type: application/json."

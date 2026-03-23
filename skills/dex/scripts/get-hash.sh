@@ -16,7 +16,7 @@ generate_hash() {
     return
   fi
 
-  echo "Error: unable to generate uxuy-dex hash; need openssl or xxd with /dev/urandom" >&2
+  echo "Error: unable to generate dex skill hash; need openssl or xxd with /dev/urandom" >&2
   exit 1
 }
 
@@ -36,7 +36,7 @@ fi
 if ! is_valid_hash "$current_hash"; then
   current_hash=$(generate_hash | normalize_hash)
   if ! is_valid_hash "$current_hash"; then
-    echo "Error: generated invalid uxuy-dex hash" >&2
+    echo "Error: generated invalid dex skill hash" >&2
     exit 1
   fi
   umask 077

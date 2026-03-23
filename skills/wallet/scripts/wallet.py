@@ -46,6 +46,17 @@ RPC_ENV_VARS = {
     "solana": "SOLANA_RPC_URL",
     "tron": "TRON_RPC_URL",
 }
+DEFAULT_RPC_URLS = {
+    "bsc": [
+        "https://bsc-rpc.publicnode.com",
+        "https://bsc-dataseed.bnbchain.org",
+        "https://bsc-dataseed-public.bnbchain.org",
+    ],
+    "base": ["https://base-rpc.publicnode.com"],
+    "ethereum": ["https://ethereum-rpc.publicnode.com"],
+    "solana": ["https://solana-rpc.publicnode.com"],
+    "tron": ["https://tron-rpc.publicnode.com", "https://api.trongrid.io"],
+}
 TRACKED_TOKEN_CHAINS = {
     "bsc": "BNB Smart Chain",
     "base": "Base",
@@ -1087,12 +1098,27 @@ def upsert_account(account_record: dict[str, Any]) -> None:
     save_accounts_store(store)
 
 
-def require_rpc_url(chain: str) -> str:
+def get_rpc_candidates(chain: str) -> list[str]:
     env_name = RPC_ENV_VARS[chain]
-    rpc_url = os.environ.get(env_name, "").strip()
-    if not rpc_url:
-        raise WalletError(f"Missing RPC URL. Set {env_name}")
-    return rpc_url
+    configured = os.environ.get(env_name, "").strip()
+    if configured:
+        return [configured]
+    defaults = DEFAULT_RPC_URLS.get(chain, [])
+    if defaults:
+        return list(dict.fromkeys(defaults))
+    raise WalletError(f"Missing RPC URL. Set {env_name}")
+
+
+def rpc_switch_hint(chain: str) -> str:
+    env_name = RPC_ENV_VARS[chain]
+    return f"If this RPC node fails or is rate-limited, set {env_name} to a different RPC node and try again."
+
+
+def rpc_failure(chain: str, failures: list[str]) -> WalletError:
+    if len(failures) == 1:
+        return WalletError(f"{failures[0]}. {rpc_switch_hint(chain)}")
+    detail = "; ".join(failures)
+    return WalletError(f"Unable to reach a working {chain} RPC node. Attempts: {detail}. {rpc_switch_hint(chain)}")
 
 
 def normalize_contract_address(chain: str, contract_address: str) -> str:
@@ -1248,6 +1274,16 @@ def rpc_post(url: str, method: str, params: list[Any]) -> Any:
     return data["result"]
 
 
+def rpc_post_with_failover(chain: str, method: str, params: list[Any]) -> Any:
+    failures: list[str] = []
+    for url in get_rpc_candidates(chain):
+        try:
+            return rpc_post(url, method, params)
+        except WalletError as exc:
+            failures.append(f"{url} -> {exc}")
+    raise rpc_failure(chain, failures)
+
+
 def tron_post(url: str, path: str, payload: dict[str, Any]) -> Any:
     endpoint = url.rstrip("/") + "/" + path.lstrip("/")
     body = json.dumps(payload).encode("utf-8")
@@ -1266,12 +1302,27 @@ def tron_post(url: str, path: str, payload: dict[str, Any]) -> Any:
     return data
 
 
+def tron_post_with_failover(chain: str, path: str, payload: dict[str, Any]) -> Any:
+    failures: list[str] = []
+    for url in get_rpc_candidates(chain):
+        try:
+            return tron_post(url, path, payload)
+        except WalletError as exc:
+            failures.append(f"{url} -> {exc}")
+    raise rpc_failure(chain, failures)
+
+
 def get_evm_web3(chain: str) -> Web3:
-    rpc_url = require_rpc_url(chain)
-    web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
-    if not web3.is_connected():
-        raise WalletError(f"Unable to connect to {chain} RPC")
-    return web3
+    failures: list[str] = []
+    for rpc_url in get_rpc_candidates(chain):
+        web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
+        try:
+            if web3.is_connected():
+                return web3
+            failures.append(f"{rpc_url} -> Unable to connect to {chain} RPC")
+        except Exception as exc:
+            failures.append(f"{rpc_url} -> {exc}")
+    raise rpc_failure(chain, failures)
 
 
 def require_evm_chain(chain: str, action: str) -> str:
@@ -1385,10 +1436,9 @@ def query_evm_balances(chain: str, address: str) -> dict[str, Any]:
 
 
 def query_solana_balances(address: str) -> dict[str, Any]:
-    rpc_url = require_rpc_url("solana")
-    native_result = rpc_post(rpc_url, "getBalance", [address])
-    token_result = rpc_post(
-        rpc_url,
+    native_result = rpc_post_with_failover("solana", "getBalance", [address])
+    token_result = rpc_post_with_failover(
+        "solana",
         "getTokenAccountsByOwner",
         [address, {"programId": SOLANA_TOKEN_PROGRAM}, {"encoding": "jsonParsed"}],
     )
@@ -1441,8 +1491,7 @@ def query_solana_balances(address: str) -> dict[str, Any]:
 
 
 def query_tron_balances(address: str) -> dict[str, Any]:
-    rpc_url = require_rpc_url("tron")
-    account = tron_post(rpc_url, "/wallet/getaccount", {"address": address, "visible": True})
+    account = tron_post_with_failover("tron", "/wallet/getaccount", {"address": address, "visible": True})
 
     assets: list[dict[str, Any]] = []
     native_raw = int(account.get("balance", 0) or 0)

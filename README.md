@@ -12,7 +12,8 @@ npx skills add https://github.com/uxuyprotocol/skills-hub
 
 ## Included Skills
 
-- `uxuy-dex`: query UXUY DEX market data through the public RPC gateway
+- `dex`: query UXUY DEX market data through the public RPC gateway
+- `wallet`: create and manage local Web3 wallets, derive addresses, and query balances
 
 ## Notes
 

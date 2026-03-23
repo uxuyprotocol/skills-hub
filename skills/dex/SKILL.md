@@ -1,9 +1,9 @@
 ---
-name: uxuy-dex
+name: dex
 description: Use this skill when the user wants to query UXUY DEX market data through the public RPC gateway on bnbchain, solana, base, xlayer, or ethereum. This skill is configured to use appId 07541bf85df2072a9e0d0b2a964dc718 and does not require JWT authentication.
 ---
 
-# UXUY DEX
+# DEX
 
 Use this skill to map a market-data question to the correct UXUY DEX JSON-RPC method and produce a ready-to-send request against `https://gwapi.ourdex.com/{chain}/07541bf85df2072a9e0d0b2a964dc718`.
 

@@ -1,9 +1,9 @@
 ---
-name: uxuy-wallet
+name: wallet
 description: Use this skill when the user wants to create or manage a local Web3 wallet, generate or import a mnemonic or private key, derive addresses for bsc, base, ethereum, tron, or solana, query balances for tracked assets, or query, approve, or transfer an ERC-20 token on bsc, base, or ethereum from a local wallet.
 ---
 
-# UXUY Wallet
+# Wallet
 
 Use this skill to manage a local wallet through one Python CLI:
 
@@ -52,13 +52,23 @@ Supported chains:
 - Balance query: `bsc`, `base`, `ethereum`, `tron`, `solana`
 - ERC-20 query / approve / transfer: `bsc`, `base`, `ethereum`
 
-Required RPC env vars:
+Built-in public RPC defaults:
+
+- `bsc`: `https://bsc-rpc.publicnode.com`
+- `base`: `https://base-rpc.publicnode.com`
+- `ethereum`: `https://ethereum-rpc.publicnode.com`
+- `solana`: `https://solana-rpc.publicnode.com`
+- `tron`: `https://tron-rpc.publicnode.com`
+
+Optional RPC override env vars:
 
 - `BSC_RPC_URL`
 - `BASE_RPC_URL`
 - `ETHEREUM_RPC_URL`
 - `TRON_RPC_URL`
 - `SOLANA_RPC_URL`
+
+If a public RPC returns an HTTP error, timeout, or rate-limit error, switch to a different node by setting the matching `*_RPC_URL`.
 
 ## Command Map
 
@@ -143,6 +153,8 @@ python scripts/wallet.py token transfer --chain base --token 0x833589fCD6eDb6E08
 - Balance queries only return native assets or tracked tokens with balance greater than zero.
 - Tracked tokens come from `scripts/main_tokens.json` plus locally discovered tokens in `~/.uxuy-wallet/.tokens`.
 - `balances`, `token query`, `token approve`, and `token transfer` should prefer `--account`; if it is omitted, use the active account from `~/.uxuy-wallet/.active` when present.
+- If no `*_RPC_URL` override is set, the script uses its built-in public RPC nodes and falls back across the configured list for that chain.
+- If all configured RPC nodes fail, the error should tell the user to switch the matching `*_RPC_URL` to another RPC node.
 - `token query` always returns ERC-20 metadata and `total_supply`, and can also return holder balance or allowance.
 - `token query`, `token approve`, and `token transfer` accept either a token address or a known token symbol/name already present in `main_tokens.json` or `.tokens`.
 - If a user queries an ERC-20 token by address and it is not in `main_tokens.json`, cache it in `.tokens` for later reuse.
@@ -160,3 +172,4 @@ When using this skill:
 5. If no address is supplied for `balances`, let the script derive the target from the selected account or local wallet state.
 6. When reporting results, show the account name, derived address, and masked secret status, not the raw mnemonic or private key.
 7. When a balance command returns no assets, state that the tracked assets on that chain are all zero.
+8. If an RPC request fails, tell the user which `*_RPC_URL` to replace and suggest changing to another RPC node.
